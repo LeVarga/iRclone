@@ -1,0 +1,83 @@
+---
+date: 2019-11-19T16:02:36Z
+title: "rclone"
+slug: rclone
+url: /commands/rclone/
+---
+## rclone
+
+Show help for rclone commands, flags and backends.
+
+### Synopsis
+
+
+Rclone syncs files to and from cloud storage providers as well as
+mounting them, listing them in lots of different ways.
+
+See the home page (https://rclone.org/) for installation, usage,
+documentation, changelog and configuration walkthroughs.
+
+
+
+```
+rclone [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for rclone
+```
+
+See the [global flags page](/flags/) for global options not listed here.
+
+### SEE ALSO
+
+* [rclone about](/commands/rclone_about/)	 - Get quota information from the remote.
+* [rclone authorize](/commands/rclone_authorize/)	 - Remote authorization.
+* [rclone cachestats](/commands/rclone_cachestats/)	 - Print cache stats for a remote
+* [rclone cat](/commands/rclone_cat/)	 - Concatenates any files and sends them to stdout.
+* [rclone check](/commands/rclone_check/)	 - Checks the files in the source and destination match.
+* [rclone cleanup](/commands/rclone_cleanup/)	 - Clean up the remote if possible
+* [rclone config](/commands/rclone_config/)	 - Enter an interactive configuration session.
+* [rclone copy](/commands/rclone_copy/)	 - Copy files from source to dest, skipping already copied
+* [rclone copyto](/commands/rclone_copyto/)	 - Copy files from source to dest, skipping already copied
+* [rclone copyurl](/commands/rclone_copyurl/)	 - Copy url content to dest.
+* [rclone cryptcheck](/commands/rclone_cryptcheck/)	 - Cryptcheck checks the integrity of a crypted remote.
+* [rclone cryptdecode](/commands/rclone_cryptdecode/)	 - Cryptdecode returns unencrypted file names.
+* [rclone dbhashsum](/commands/rclone_dbhashsum/)	 - Produces a Dropbox hash file for all the objects in the path.
+* [rclone dedupe](/commands/rclone_dedupe/)	 - Interactively find duplicate files and delete/rename them.
+* [rclone delete](/commands/rclone_delete/)	 - Remove the contents of path.
+* [rclone deletefile](/commands/rclone_deletefile/)	 - Remove a single file from remote.
+* [rclone genautocomplete](/commands/rclone_genautocomplete/)	 - Output completion script for a given shell.
+* [rclone gendocs](/commands/rclone_gendocs/)	 - Output markdown docs for rclone to the directory supplied.
+* [rclone hashsum](/commands/rclone_hashsum/)	 - Produces an hashsum file for all the objects in the path.
+* [rclone link](/commands/rclone_link/)	 - Generate public link to file/folder.
+* [rclone listremotes](/commands/rclone_listremotes/)	 - List all the remotes in the config file.
+* [rclone ls](/commands/rclone_ls/)	 - List the objects in the path with size and path.
+* [rclone lsd](/commands/rclone_lsd/)	 - List all directories/containers/buckets in the path.
+* [rclone lsf](/commands/rclone_lsf/)	 - List directories and objects in remote:path formatted for parsing
+* [rclone lsjson](/commands/rclone_lsjson/)	 - List directories and objects in the path in JSON format.
+* [rclone lsl](/commands/rclone_lsl/)	 - List the objects in path with modification time, size and path.
+* [rclone md5sum](/commands/rclone_md5sum/)	 - Produces an md5sum file for all the objects in the path.
+* [rclone mkdir](/commands/rclone_mkdir/)	 - Make the path if it doesn't already exist.
+* [rclone mount](/commands/rclone_mount/)	 - Mount the remote as file system on a mountpoint.
+* [rclone move](/commands/rclone_move/)	 - Move files from source to dest.
+* [rclone moveto](/commands/rclone_moveto/)	 - Move file or directory from source to dest.
+* [rclone ncdu](/commands/rclone_ncdu/)	 - Explore a remote with a text based user interface.
+* [rclone obscure](/commands/rclone_obscure/)	 - Obscure password for use in the rclone.conf
+* [rclone purge](/commands/rclone_purge/)	 - Remove the path and all of its contents.
+* [rclone rc](/commands/rclone_rc/)	 - Run a command against a running rclone.
+* [rclone rcat](/commands/rclone_rcat/)	 - Copies standard input to file on remote.
+* [rclone rcd](/commands/rclone_rcd/)	 - Run rclone listening to remote control commands only.
+* [rclone rmdir](/commands/rclone_rmdir/)	 - Remove the path if empty.
+* [rclone rmdirs](/commands/rclone_rmdirs/)	 - Remove empty directories under the path.
+* [rclone serve](/commands/rclone_serve/)	 - Serve a remote over a protocol.
+* [rclone settier](/commands/rclone_settier/)	 - Changes storage class/tier of objects in remote.
+* [rclone sha1sum](/commands/rclone_sha1sum/)	 - Produces an sha1sum file for all the objects in the path.
+* [rclone size](/commands/rclone_size/)	 - Prints the total size and number of objects in remote:path.
+* [rclone sync](/commands/rclone_sync/)	 - Make source and dest identical, modifying destination only.
+* [rclone touch](/commands/rclone_touch/)	 - Create new file or change file modification time.
+* [rclone tree](/commands/rclone_tree/)	 - List the contents of the remote in a tree like fashion.
+* [rclone version](/commands/rclone_version/)	 - Show the version number.
+

@@ -1,0 +1,54 @@
+---
+date: 2019-11-19T16:02:36Z
+title: "rclone cat"
+slug: rclone_cat
+url: /commands/rclone_cat/
+---
+## rclone cat
+
+Concatenates any files and sends them to stdout.
+
+### Synopsis
+
+
+rclone cat sends any files to standard output.
+
+You can use it like this to output a single file
+
+    rclone cat remote:path/to/file
+
+Or like this to output any file in dir or subdirectories.
+
+    rclone cat remote:path/to/dir
+
+Or like this to output any .txt files in dir or subdirectories.
+
+    rclone --include "*.txt" cat remote:path/to/dir
+
+Use the --head flag to print characters only at the start, --tail for
+the end and --offset and --count to print a section in the middle.
+Note that if offset is negative it will count from the end, so
+--offset -1 --count 1 is equivalent to --tail 1.
+
+
+```
+rclone cat remote:path [flags]
+```
+
+### Options
+
+```
+      --count int    Only print N characters. (default -1)
+      --discard      Discard the output instead of printing.
+      --head int     Only print the first N characters.
+  -h, --help         help for cat
+      --offset int   Start printing at offset N (or from end if -ve).
+      --tail int     Only print the last N characters.
+```
+
+See the [global flags page](/flags/) for global options not listed here.
+
+### SEE ALSO
+
+* [rclone](/commands/rclone/)	 - Show help for rclone commands, flags and backends.
+

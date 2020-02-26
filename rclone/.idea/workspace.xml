@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ChangeListManager">
+    <list default="true" id="cf3d2aa1-268e-4c9b-9374-0e561977db57" name="Default Changelist" comment="Initial Commit">
+      <change afterPath="$PROJECT_DIR$/../iRclone/Extensions/UIVIewController.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/FileManager/Model/File/File.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/FileManager/Model/File/LocalFile.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/FileManager/Model/File/RemoteFile.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/FileManager/Model/RemoteFiles.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/FileManager/Model/Transfers.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/FileManager/UI/FilesTableViewController.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/FileManager/UI/LocalFilesTableViewController.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/FileManager/UI/RemoteFilesTableViewController.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/FileManager/UI/TransferTableViewCell.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/FileManager/UI/TransfersTableViewController.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/RemoteManager/New Group/AppDelegate.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/RemoteManager/New Group/iRclone.entitlements" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/RemoteManager/UI/BoolOptionTableViewCell.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/RemoteManager/UI/RemotesTableViewController.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../iRclone/RemoteManager/UI/StringOptionTableViewCell.swift" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone.xcodeproj/project.pbxproj" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone.xcodeproj/project.pbxproj" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/AddCustomRemoteViewController.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/RemoteManager/UI/NewRemoteViewController.swift" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/AppDelegate.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/AppDelegate.swift" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/Base.lproj/Main.storyboard" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/Base.lproj/Main.storyboard" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/Clipboard.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/FileManager/Model/Clipboard.swift" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/FilesViewController.swift" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/Info.plist" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/Info.plist" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/LocalItemsTableViewController.swift" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/LocalItemsViewController.swift" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/Providers.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/RemoteManager/Model/Providers.swift" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/Rclone.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/Rclone.swift" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/RemoteAuthViewController.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/RemoteManager/UI/RemoteAuthViewController.swift" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/RemoteDirContents.swift" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/RemoteOptionsViewController.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/RemoteManager/UI/RemoteOptionsViewController.swift" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/Remotes.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/RemoteManager/Model/Remotes.swift" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/RemotesViewController.swift" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/VideoViewController.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/MediaPlayer/VideoViewController.swift" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/iRclone.entitlements" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/iRclone.entitlements" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/fs/rc/rcserver/rcserver.go" beforeDir="false" afterPath="$PROJECT_DIR$/fs/rc/rcserver/rcserver.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/go.mod" beforeDir="false" afterPath="$PROJECT_DIR$/go.mod" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/go.sum" beforeDir="false" afterPath="$PROJECT_DIR$/go.sum" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/lib/oauthutil/oauthutil.go" beforeDir="false" afterPath="$PROJECT_DIR$/lib/oauthutil/oauthutil.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/librclone.a" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/rclone.go" beforeDir="false" afterPath="$PROJECT_DIR$/rclone.go" afterDir="false" />
+    </list>
+    <option name="EXCLUDED_CONVERTED_TO_IGNORED" value="true" />
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="DatabaseView">
+    <option name="SHOW_INTERMEDIATE" value="true" />
+    <option name="GROUP_DATA_SOURCES" value="true" />
+    <option name="GROUP_SCHEMA" value="true" />
+    <option name="GROUP_CONTENTS" value="false" />
+    <option name="SORT_POSITIONED" value="false" />
+    <option name="SHOW_EMPTY_GROUPS" value="false" />
+    <option name="AUTO_SCROLL_FROM_SOURCE" value="false" />
+    <option name="HIDDEN_KINDS">
+      <set />
+    </option>
+    <expand />
+    <select />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Go Application" />
+        <option value="Go File" />
+      </list>
+    </option>
+  </component>
+  <component name="GOROOT" path="/usr/local/Cellar/go/1.13.6/libexec" />
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$/.." />
+  </component>
+  <component name="GoLibraries">
+    <option name="indexEntireGoPath" value="false" />
+  </component>
+  <component name="ProjectId" id="1TreQ2rZaiX9s8dfLZ6qpVI20MP" />
+  <component name="ProjectLevelVcsManager" settingsEditedManually="true" />
+  <component name="PropertiesComponent">
+    <property name="DefaultGoTemplateProperty" value="Go File" />
+    <property name="GO_FMT" value="true" />
+    <property name="SHARE_PROJECT_CONFIGURATION_FILES" value="true" />
+    <property name="WebServerToolWindowFactoryState" value="false" />
+    <property name="configurable.Global.GOPATH.is.expanded" value="true" />
+    <property name="configurable.Module.GOPATH.is.expanded" value="false" />
+    <property name="configurable.Project.GOPATH.is.expanded" value="true" />
+    <property name="go.import.settings.migrated" value="true" />
+    <property name="go.sdk.automatically.set" value="true" />
+    <property name="go.tried.to.enable.integration.vgo.integrator" value="true" />
+    <property name="go.vendoring.notification.had.been.shown" value="true" />
+    <property name="last_opened_file_path" value="$PROJECT_DIR$" />
+    <property name="settings.editor.selected.configurable" value="reference.settingsdialog.IDE.editor.colors" />
+  </component>
+  <component name="RunDashboard">
+    <option name="ruleStates">
+      <list>
+        <RuleState>
+          <option name="name" value="ConfigurationTypeDashboardGroupingRule" />
+        </RuleState>
+        <RuleState>
+          <option name="name" value="StatusDashboardGroupingRule" />
+        </RuleState>
+      </list>
+    </option>
+  </component>
+  <component name="RunManager">
+    <configuration name="GoMobile Bind" type="ShConfigurationType">
+      <option name="SCRIPT_PATH" value="$PROJECT_DIR$/build.sh" />
+      <option name="SCRIPT_OPTIONS" value="&quot;amd64,ios/arm64&quot; ~/Documents/Xcode/iRclone/rclone.framework" />
+      <option name="INTERPRETER_PATH" value="/bin/bash" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <method v="2" />
+    </configuration>
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="1" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State>
+              <option name="COLUMN_ORDER" />
+            </State>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="Initial Commit" />
+    <option name="LAST_COMMIT_MESSAGE" value="Initial Commit" />
+  </component>
+  <component name="VgoProject">
+    <integration-enabled>true</integration-enabled>
+  </component>
+</project>
