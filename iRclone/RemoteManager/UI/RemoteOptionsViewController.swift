@@ -159,6 +159,8 @@ class RemoteOptionsViewController: UIViewController, UITextFieldDelegate, UITabl
         sleep(1)
         if Rclone.authState != "" {
             performSegue(withIdentifier: "Authorization", sender: self)
+        } else {
+            self.navigationController?.popToRootViewController(animated: true)
         }
         
     }

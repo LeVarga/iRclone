@@ -29,9 +29,9 @@ class RemoteAuthViewController: UIViewController {
                    var request = URLRequest(url: url)
                    request.httpMethod = "POST"
                    let task = URLSession.shared.dataTask(with: request)
-                   task.resume()
-                   self.presentingViewController?.dismiss(animated: false, completion: {
-                   })
+            self.presentingViewController?.dismiss(animated: false, completion: {
+                task.resume()
+            })
                }
     }
     
