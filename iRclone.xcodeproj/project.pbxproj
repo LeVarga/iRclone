@@ -42,6 +42,7 @@
 		DBD6A07D23C055EE002CD803 /* RemoteOptionsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD6A07C23C055EE002CD803 /* RemoteOptionsViewController.swift */; };
 		DBD6A07F23C056CC002CD803 /* Providers.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD6A07E23C056CC002CD803 /* Providers.swift */; };
 		DBD6A08123C1C74B002CD803 /* RemoteAuthViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD6A08023C1C74B002CD803 /* RemoteAuthViewController.swift */; };
+		DBEFE0402406A68900F3F143 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = DBEFE03F2406A68900F3F143 /* README.md */; };
 		DBF03E20209677C300CA636B /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = DBF03E1E209677C300CA636B /* Main.storyboard */; };
 		DBF03E22209677C300CA636B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DBF03E21209677C300CA636B /* Assets.xcassets */; };
 		DBF03E25209677C300CA636B /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = DBF03E23209677C300CA636B /* LaunchScreen.storyboard */; };
@@ -85,6 +86,7 @@
 		DBD6A07C23C055EE002CD803 /* RemoteOptionsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteOptionsViewController.swift; sourceTree = "<group>"; };
 		DBD6A07E23C056CC002CD803 /* Providers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Providers.swift; sourceTree = "<group>"; };
 		DBD6A08023C1C74B002CD803 /* RemoteAuthViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAuthViewController.swift; sourceTree = "<group>"; };
+		DBEFE03F2406A68900F3F143 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = SOURCE_ROOT; };
 		DBF03E17209677C300CA636B /* iRclone.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iRclone.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DBF03E1F209677C300CA636B /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		DBF03E21209677C300CA636B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -261,6 +263,7 @@
 				DBF03E21209677C300CA636B /* Assets.xcassets */,
 				DBF03E23209677C300CA636B /* LaunchScreen.storyboard */,
 				DB5DA6A223FD1E37002D297D /* iRclone.entitlements */,
+				DBEFE03F2406A68900F3F143 /* README.md */,
 			);
 			path = iRclone;
 			sourceTree = "<group>";
@@ -345,6 +348,7 @@
 			files = (
 				DB5DA6A323FD1E37002D297D /* iRclone.entitlements in Resources */,
 				DBF03E25209677C300CA636B /* LaunchScreen.storyboard in Resources */,
+				DBEFE0402406A68900F3F143 /* README.md in Resources */,
 				DBF03E22209677C300CA636B /* Assets.xcassets in Resources */,
 				DBF03E20209677C300CA636B /* Main.storyboard in Resources */,
 			);
