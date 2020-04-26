@@ -43,28 +43,23 @@ class Rclone {
             request.httpMethod = "POST"
             request.timeoutInterval = timeout
             let task = URLSession.shared.dataTask(with: request) { (data, response, error) in
-                DispatchQueue.main.async {
-                    let statusCode = (response as? HTTPURLResponse)?.statusCode
-                    let decoder = JSONDecoder()
-                    if error == nil && statusCode == 200, let data = data {
-                        do {
-                            let decodedData = try decoder.decode(T.self, from: data)
-                            completion(decodedData, error)
-                        } catch let error {
-                            completion(nil, error)
+                let statusCode = (response as? HTTPURLResponse)?.statusCode
+                let decoder = JSONDecoder()
+                var errorToReturn: Error? = error
+                var decodedData: T? = nil
+                if let data = data {
+                    do {
+                        if statusCode == 200 {
+                            decodedData = try decoder.decode(T.self, from: data)
+                        } else {
+                            errorToReturn = NSError(domain:"", code: statusCode ?? 0, userInfo:[NSLocalizedDescriptionKey : try decoder.decode(ErrorResponse.self, from: data).error])
                         }
-                    } else if error == nil, let data = data {
-                        do {
-                            let rcloneErrorResponse = try decoder.decode(ErrorResponse.self, from: data)
-                            completion(nil, NSError(domain:"", code: statusCode ?? 0, userInfo:[NSLocalizedDescriptionKey : rcloneErrorResponse.error]))
-                        } catch let error {
-                            completion(nil, error)
-                        }
-                    } else if error == nil {
-                        completion(nil, NSError(domain:"", code: statusCode ?? 0, userInfo:[NSLocalizedDescriptionKey : "No data received, status code \(statusCode ?? 0)"]))
-                    } else {
-                        completion(nil, error)
+                    } catch {
+                        errorToReturn = error
                     }
+                }
+                DispatchQueue.main.async {
+                    completion(decodedData, errorToReturn)
                 }
             }
             task.resume()
@@ -84,6 +79,7 @@ class Rclone {
         RcloneSetConfigPath(configPath.path)
     }
     
+    ///Start the remote control server
     static func start() {
         RcloneStartRC(nil)
     }
