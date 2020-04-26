@@ -279,6 +279,7 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
             self.view.bringSubviewToFront(trackSelectionSubView)
         }
         controlsVisible.toggle()
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
     }
     
     class SpinnerViewController: UIViewController {
@@ -295,5 +296,9 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor).isActive = true
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor).isActive = true
         }
+    }
+    
+    override var prefersHomeIndicatorAutoHidden: Bool {
+        return !controlsVisible
     }
 }
