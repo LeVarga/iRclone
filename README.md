@@ -17,14 +17,14 @@ iOS 13+ Required
 - cocoapods
 - go
 - gomobile
-- Xcode 11
+- Xcode 11+
 ### Steps:
 - git clone https://github.com/lvarga/iRclone
 - cd iRclone
-- mkdir $GOPATH/src/github.com/rclone/
-- ln -s rclone $GOPATH/src/github.com/rclone/
+- mkdir -p ~/go/src/github.com/rclone/
+- ln -s rclone ~/go/src/github.com/rclone/
 - cd rclone
-- gomobile bind -target=ios/amd64,ios/arm64 -o ../rclone.framework
+- gomobile bind -target=ios/arm64 -o ../rclone.xcframework
 - cd ..
 - pod install
 - open iRclone.xcworkspace
