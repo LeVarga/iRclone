@@ -6,6 +6,8 @@
 //  Copyright © 2020 Levente V. All rights reserved.
 //
 
+import UIKit
+
 extension UIViewController {
     func presentError(error: String, cancelHandler: ((UIAlertAction) -> Swift.Void)? = nil) {
         let alert = UIAlertController(title: "Error", message: error, preferredStyle: UIAlertController.Style.alert)

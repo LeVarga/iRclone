@@ -7,7 +7,7 @@
 //
 
 import UIKit
-import MediaPlayer
+import MobileVLCKit
 import QuartzCore
 
 class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableViewDelegate, UITableViewDataSource {
@@ -112,7 +112,7 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
             if mediaPlayer.audioTrackIndexes[indexPath.row] as? Int32 == mediaPlayer.currentAudioTrackIndex {
                 cell.accessoryType = .checkmark
             }
-            if let audioTrackName = mediaPlayer.audioTrackNames?[indexPath.row] as? String {
+            if let audioTrackName = mediaPlayer.audioTrackNames[indexPath.row] as? String {
                 cell.textLabel?.text = audioTrackName
                 break
             }
@@ -127,7 +127,7 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
             }
             cell.textLabel?.text = "Track #\(indexPath.row + 1)"
         case 2:
-            if mediaPlayer.videoTrackIndexes?[indexPath.row] as? Int32 == mediaPlayer.currentVideoTrackIndex {
+            if mediaPlayer.videoTrackIndexes[indexPath.row] as? Int32 == mediaPlayer.currentVideoTrackIndex {
                 cell.accessoryType = .checkmark
             }
             if let videoTrackName = mediaPlayer.videoTrackNames[indexPath.row] as? String {
@@ -162,7 +162,7 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
         case 1:
             mediaPlayer.currentVideoSubTitleIndex = mediaPlayer.videoSubTitlesIndexes[indexPath.row] as! Int32
         case 2:
-            mediaPlayer.currentVideoTrackIndex = mediaPlayer.videoTrackIndexes?[indexPath.row] as! Int32
+            mediaPlayer.currentVideoTrackIndex = mediaPlayer.videoTrackIndexes[indexPath.row] as! Int32
         default:
             break
         }
@@ -178,9 +178,9 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
     func mediaPlayerTimeChanged(_ aNotification: Notification!) {
         toggleSpinner(on: false)
         if controlsVisible && !seekBarBeingTouched {
-            seekBar.setValue(mediaPlayer.time.value.floatValue, animated: false)
+            seekBar.setValue(mediaPlayer.time.value?.floatValue ?? 0, animated: false)
             currentTimeLabel.text = mediaPlayer.time.stringValue
-            remainingTimeLabel.text = mediaPlayer.remainingTime.stringValue
+            remainingTimeLabel.text = mediaPlayer.remainingTime?.stringValue
         }
     }
     
@@ -202,7 +202,7 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
         toggleControlsVisible()
         if mediaPlayer.isSeekable {
             seekBar.maximumValue = mediaPlayer.media?.length.value?.floatValue ?? 0
-            seekBar.setValue(mediaPlayer.time?.value?.floatValue ?? 0, animated: false)
+            seekBar.setValue(mediaPlayer.time.value?.floatValue ?? 0, animated: false)
         }
     }
     
@@ -302,3 +302,4 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
         return !controlsVisible
     }
 }
+

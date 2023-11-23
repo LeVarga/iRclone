@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 50;
+	objectVersion = 54;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -21,9 +21,10 @@
 		DB6ACFCF23F2BDE1006AABD3 /* TransfersTableViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB6ACFCE23F2BDE1006AABD3 /* TransfersTableViewController.swift */; };
 		DB6ACFD123F2C3D2006AABD3 /* TransferTableViewCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB6ACFD023F2C3D2006AABD3 /* TransferTableViewCell.swift */; };
 		DB6ACFDD23FA5A0D006AABD3 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB6ACFDC23FA5A0D006AABD3 /* AppDelegate.swift */; };
-		DB6C5F0C23DECC0C0077F979 /* rclone.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB6C5F0B23DECC0B0077F979 /* rclone.framework */; };
 		DB6E5E3023C4442800A1646C /* Transfers.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB6E5E2F23C4442800A1646C /* Transfers.swift */; };
 		DB72D8D323DBCB8000B2A955 /* Remotes.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB72D8D223DBCB8000B2A955 /* Remotes.swift */; };
+		DB7D384E2B10045E00D6387A /* rclone.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB7D384C2B10045900D6387A /* rclone.xcframework */; };
+		DB7D38532B1004F000D6387A /* libresolv.9.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = DB7D38522B1004E700D6387A /* libresolv.9.tbd */; };
 		DB8E308223FA8A1F00C75897 /* Rclone.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB8E308123FA8A1F00C75897 /* Rclone.swift */; };
 		DB8E308523FA920E00C75897 /* UIVIewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB8E308423FA920E00C75897 /* UIVIewController.swift */; };
 		DB8E308723FA9C1B00C75897 /* File.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB8E308623FA9C1B00C75897 /* File.swift */; };
@@ -75,9 +76,11 @@
 		DB6ACFCE23F2BDE1006AABD3 /* TransfersTableViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransfersTableViewController.swift; sourceTree = "<group>"; };
 		DB6ACFD023F2C3D2006AABD3 /* TransferTableViewCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferTableViewCell.swift; sourceTree = "<group>"; };
 		DB6ACFDC23FA5A0D006AABD3 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
-		DB6C5F0B23DECC0B0077F979 /* rclone.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = rclone.framework; sourceTree = "<group>"; };
 		DB6E5E2F23C4442800A1646C /* Transfers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Transfers.swift; sourceTree = "<group>"; };
 		DB72D8D223DBCB8000B2A955 /* Remotes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remotes.swift; sourceTree = "<group>"; };
+		DB7D384C2B10045900D6387A /* rclone.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = rclone.xcframework; sourceTree = "<group>"; };
+		DB7D38522B1004E700D6387A /* libresolv.9.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libresolv.9.tbd; path = usr/lib/libresolv.9.tbd; sourceTree = SDKROOT; };
+		DB7D38542B100A3700D6387A /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		DB8E308123FA8A1F00C75897 /* Rclone.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Rclone.swift; sourceTree = "<group>"; };
 		DB8E308423FA920E00C75897 /* UIVIewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIVIewController.swift; sourceTree = "<group>"; };
 		DB8E308623FA9C1B00C75897 /* File.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = File.swift; sourceTree = "<group>"; };
@@ -123,14 +126,15 @@
 			files = (
 				DBA7CE4D23852DCD004CC791 /* CFNetwork.framework in Frameworks */,
 				DBA7CE5523852DEC004CC791 /* CoreText.framework in Frameworks */,
+				DB7D384E2B10045E00D6387A /* rclone.xcframework in Frameworks */,
 				DBA7CE5323852DE5004CC791 /* CoreMedia.framework in Frameworks */,
 				DBA7CE4F23852DD6004CC791 /* CoreFoundation.framework in Frameworks */,
 				DBA7CE5123852DDA004CC791 /* CoreGraphics.framework in Frameworks */,
 				DBA7CE5923852E00004CC791 /* Foundation.framework in Frameworks */,
 				DBA7CE4B23852DC8004CC791 /* AVFoundation.framework in Frameworks */,
 				DBA7CE4923852DC3004CC791 /* AudioToolbox.framework in Frameworks */,
+				DB7D38532B1004F000D6387A /* libresolv.9.tbd in Frameworks */,
 				D28D64120192FE8E98940248 /* Pods_iRclone.framework in Frameworks */,
-				DB6C5F0C23DECC0C0077F979 /* rclone.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -146,17 +150,9 @@
 			path = Pods;
 			sourceTree = "<group>";
 		};
-		DB0C424D2406598E00CFB615 /* FileProviderExtension */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = FileProviderExtension;
-			sourceTree = "<group>";
-		};
 		DB6ACFD223FA56C9006AABD3 /* FileManager */ = {
 			isa = PBXGroup;
 			children = (
-				DB0C424D2406598E00CFB615 /* FileProviderExtension */,
 				DB6ACFD723FA577C006AABD3 /* Model */,
 				DB6ACFD323FA56E7006AABD3 /* UI */,
 			);
@@ -266,6 +262,7 @@
 		DBF03E0E209677C300CA636B = {
 			isa = PBXGroup;
 			children = (
+				DB7D38542B100A3700D6387A /* README.md */,
 				DBF03E19209677C300CA636B /* iRclone */,
 				DBBB13F52470D048005A2391 /* iRcloneTests */,
 				DBF03E18209677C300CA636B /* Products */,
@@ -303,7 +300,8 @@
 		DBF14855237AB7EB00632E8E /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				DB6C5F0B23DECC0B0077F979 /* rclone.framework */,
+				DB7D38522B1004E700D6387A /* libresolv.9.tbd */,
+				DB7D384C2B10045900D6387A /* rclone.xcframework */,
 				DBA7CE5823852E00004CC791 /* Foundation.framework */,
 				DBA7CE5623852DF1004CC791 /* CoreVideo.framework */,
 				DBA7CE5423852DEC004CC791 /* CoreText.framework */,
@@ -347,6 +345,7 @@
 				DBF03E13209677C300CA636B /* Sources */,
 				DBF03E14209677C300CA636B /* Frameworks */,
 				DBF03E15209677C300CA636B /* Resources */,
+				9E91E4B5DED3E86805FE4275 /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
@@ -419,6 +418,23 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		9E91E4B5DED3E86805FE4275 /* [CP] Embed Pods Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-iRclone/Pods-iRclone-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+			);
+			name = "[CP] Embed Pods Frameworks";
+			outputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-iRclone/Pods-iRclone-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-iRclone/Pods-iRclone-frameworks.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
 		FEBC4661376E53E917795219 /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -691,13 +707,16 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = iRclone/iRclone.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
 				CODE_SIGN_STYLE = Manual;
 				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = 5X7SJ9QPK4;
 				ENABLE_BITCODE = NO;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/iRclone",
 					"$(PROJECT_DIR)",
+					"$(PROJECT_DIR)/rclone.xcframework/ios-arm64",
 				);
 				INFOPLIST_FILE = iRclone/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
@@ -708,9 +727,40 @@
 				LIBRARY_SEARCH_PATHS = "$(inherited)";
 				MARKETING_VERSION = 0.03;
 				OTHER_CODE_SIGN_FLAGS = "--deep";
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-l\"bz2\"",
+					"-l\"c++\"",
+					"-l\"iconv\"",
+					"-l\"xml2\"",
+					"-l\"z\"",
+					"-framework",
+					"\"AVFoundation\"",
+					"-framework",
+					"\"AudioToolbox\"",
+					"-framework",
+					"\"CFNetwork\"",
+					"-framework",
+					"\"CoreGraphics\"",
+					"-framework",
+					"\"CoreMedia\"",
+					"-framework",
+					"\"CoreText\"",
+					"-framework",
+					"\"MobileVLCKit\"",
+					"-framework",
+					"\"OpenGLES\"",
+					"-framework",
+					"\"QuartzCore\"",
+					"-framework",
+					"\"Security\"",
+					"-framework",
+					"\"VideoToolbox\"",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.l3v1.iRclone;
 				PRODUCT_NAME = iRclone;
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "Wildcard dev";
 				STRIP_BITCODE_FROM_COPIED_FILES = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "iRclone/iRclone-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -727,13 +777,16 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = iRclone/iRclone.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
 				CODE_SIGN_STYLE = Manual;
 				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = 5X7SJ9QPK4;
 				ENABLE_BITCODE = NO;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/iRclone",
 					"$(PROJECT_DIR)",
+					"$(PROJECT_DIR)/rclone.xcframework/ios-arm64",
 				);
 				INFOPLIST_FILE = iRclone/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
@@ -744,9 +797,40 @@
 				LIBRARY_SEARCH_PATHS = "$(inherited)";
 				MARKETING_VERSION = 0.03;
 				OTHER_CODE_SIGN_FLAGS = "--deep";
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-l\"bz2\"",
+					"-l\"c++\"",
+					"-l\"iconv\"",
+					"-l\"xml2\"",
+					"-l\"z\"",
+					"-framework",
+					"\"AVFoundation\"",
+					"-framework",
+					"\"AudioToolbox\"",
+					"-framework",
+					"\"CFNetwork\"",
+					"-framework",
+					"\"CoreGraphics\"",
+					"-framework",
+					"\"CoreMedia\"",
+					"-framework",
+					"\"CoreText\"",
+					"-framework",
+					"\"MobileVLCKit\"",
+					"-framework",
+					"\"OpenGLES\"",
+					"-framework",
+					"\"QuartzCore\"",
+					"-framework",
+					"\"Security\"",
+					"-framework",
+					"\"VideoToolbox\"",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.l3v1.iRclone;
 				PRODUCT_NAME = iRclone;
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "Wildcard dev";
 				STRIP_BITCODE_FROM_COPIED_FILES = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "iRclone/iRclone-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
