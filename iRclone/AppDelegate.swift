@@ -10,6 +10,7 @@ import UIKit
 
 let documentsUrl =  FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
 let sandboxUrl = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+let tmpDirURL = FileManager.default.temporaryDirectory
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -44,6 +45,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func applicationWillTerminate(_ application: UIApplication) {
         // Called when the application is about to terminate. Save data if appropriate. See also applicationDidEnterBackground:.
+        Rclone.stop()
     }
 
 

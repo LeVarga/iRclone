@@ -44,6 +44,8 @@
 		DBD6A07D23C055EE002CD803 /* RemoteOptionsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD6A07C23C055EE002CD803 /* RemoteOptionsViewController.swift */; };
 		DBD6A07F23C056CC002CD803 /* Providers.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD6A07E23C056CC002CD803 /* Providers.swift */; };
 		DBD6A08123C1C74B002CD803 /* RemoteAuthViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD6A08023C1C74B002CD803 /* RemoteAuthViewController.swift */; };
+		DBE3B5432B1067C8005BFF30 /* rclone.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB7D384C2B10045900D6387A /* rclone.xcframework */; };
+		DBE3B5442B1067C8005BFF30 /* rclone.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DB7D384C2B10045900D6387A /* rclone.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		DBEFE0402406A68900F3F143 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = DBEFE03F2406A68900F3F143 /* README.md */; };
 		DBF03E20209677C300CA636B /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = DBF03E1E209677C300CA636B /* Main.storyboard */; };
 		DBF03E22209677C300CA636B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DBF03E21209677C300CA636B /* Assets.xcassets */; };
@@ -59,6 +61,20 @@
 			remoteInfo = iRclone;
 		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		DBE3B5422B1067BE005BFF30 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				DBE3B5442B1067C8005BFF30 /* rclone.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		385A20599BDDD743A64109B9 /* Pods-iRclone.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-iRclone.debug.xcconfig"; path = "Target Support Files/Pods-iRclone/Pods-iRclone.debug.xcconfig"; sourceTree = "<group>"; };
@@ -117,6 +133,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DBE3B5432B1067C8005BFF30 /* rclone.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -326,6 +343,7 @@
 				DBBB13F02470D048005A2391 /* Sources */,
 				DBBB13F12470D048005A2391 /* Frameworks */,
 				DBBB13F22470D048005A2391 /* Resources */,
+				DBE3B5422B1067BE005BFF30 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -545,9 +563,11 @@
 				MTL_FAST_MATH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = l3v1.iRcloneTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iRclone.app/iRclone";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iRclone.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/iRclone";
 			};
 			name = Debug;
 		};
@@ -566,9 +586,11 @@
 				MTL_FAST_MATH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = l3v1.iRcloneTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iRclone.app/iRclone";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iRclone.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/iRclone";
 			};
 			name = Release;
 		};

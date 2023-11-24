@@ -34,7 +34,7 @@ class RemoteFilesTableViewController: FilesTableViewController, QLPreviewControl
         if !tableView.isEditing {
             tableView.deselectRow(at: indexPath, animated: true)
             let selected = contents[indexPath.row]
-            selectedUrl = URL(string: "http://localhost:5572/[\(self.remote!)]/\(selected.path)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)
+            selectedUrl = URL(string: Rclone.rcUrl.absoluteString + "/[\(self.remote!)]/\(selected.path)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)
             switch selected.type {
             case .directory:
                 let vc = storyboard?.instantiateViewController(withIdentifier: "remoteFiles")

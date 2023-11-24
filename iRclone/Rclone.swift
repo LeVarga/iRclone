@@ -10,14 +10,23 @@ import Foundation
 import Rclone
 
 class Rclone {
-    public static var rcPort: Int16 = 5572 {
+    private static var rcPort: UInt16 = 48725 {
         didSet {
-            RcloneStopRC()
-            RcloneStartRC(nil)
+            var err: NSError?
+            RcloneStopRC(&err)
+            if (err != nil) {
+                print(err!.localizedDescription)
+                return
+            }
+            RcloneStartRC("\(rcHost):\(rcPort)", &err)
+            if (err != nil) {
+                print(err!.localizedDescription)
+            }
         }
     }
-    private static let rcHost = "localhost"
-    private static var rcUrl: URL {
+    private static let socket = tmpDirURL.appendingPathComponent("rcsocket", isDirectory: false)
+    private static let rcHost = "[::1]"
+    public static var rcUrl: URL {
         get {
             return URL(string: "http://\(rcHost):\(rcPort)")!
         }
@@ -32,7 +41,7 @@ class Rclone {
             setup()
         }
     }
-    
+      
     public static func request<T>(queryString: String, jsonData: Data?, timeout: TimeInterval, decodeAs: T.Type, completion: @escaping (T?, Error?) -> Void) where T : Decodable {
         if let url = URL(string: queryString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!, relativeTo: rcUrl) {
             var request = URLRequest(url: url)
@@ -42,6 +51,7 @@ class Rclone {
             }
             request.httpMethod = "POST"
             request.timeoutInterval = timeout
+            
             let task = URLSession.shared.dataTask(with: request) { (data, response, error) in
                 let statusCode = (response as? HTTPURLResponse)?.statusCode
                 let decoder = JSONDecoder()
@@ -76,19 +86,24 @@ class Rclone {
             print("Config file doesn't exist, creating empty rclone.conf")
             FileManager.default.createFile(atPath: configPath.path, contents: nil, attributes: nil)
         }
-        RcloneSetConfigPath(configPath.path)
+        RcloneSetConfigPath(configPath.path, nil)
     }
       
     ///Start the remote control server
     static func start() {
-        RcloneStartRC(nil)
-        /*sleep(1)
-        let json: [String: Any] = ["path": configPath.path]
-        print(json)
-        let jsonData = try? JSONSerialization.data(withJSONObject: json)
-        Rclone.request(queryString: "config/setpath", jsonData: jsonData, timeout: .infinity, decodeAs: Empty.self, completion: { _, error in
-            
-        })*/
+        var err: NSError?
+        RcloneStartRC("\(rcHost):\(rcPort)", &err)
+        if (err != nil) {
+            print(err!.localizedDescription)
+        }
+    }
+    
+    static func stop() {
+        var err: NSError?
+        RcloneStopRC(&err)
+        if err != nil {
+            print(err?.localizedDescription ?? "Unspecified error stopping server")
+        }
     }
     
     struct ErrorResponse: Decodable {

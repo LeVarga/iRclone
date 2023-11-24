@@ -13,20 +13,25 @@ import (
 	_ "github.com/rclone/rclone/fs/sync"
 	"github.com/rclone/rclone/lib/oauthutil"
 	_ "github.com/rclone/rclone/lib/plugin" // import plugins
+	"strings"
 	"time"
 )
 
 var server *rcserver.Server
 
-func StopRC() {
-	server.Shutdown()
+func StopRC() error {
+	err := server.Shutdown()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-func StartRC() error {
+func StartRC(urls string) error {
 	httpOptions := rc.DefaultOpt.HTTP
-	httpOptions.ListenAddr = []string{"localhost:5572"}
-	var error error
-	server, error = rcserver.Start(context.Background(), &rc.Options{
+	httpOptions.ListenAddr = strings.Split(urls, ",")
+	var err error = nil
+	server, err = rcserver.Start(context.Background(), &rc.Options{
 		HTTP:              httpOptions,
 		Enabled:           true,
 		Serve:             true,
@@ -38,15 +43,19 @@ func StartRC() error {
 		JobExpireDuration: 24 * time.Hour,
 		JobExpireInterval: time.Minute,
 	})
-	if error != nil {
-		return error
+	if err != nil {
+		return err
 	}
 	return nil
 }
 
-func SetConfigPath(configPath string) {
-	config.SetConfigPath(configPath)
+func SetConfigPath(configPath string) error {
+	err := config.SetConfigPath(configPath)
 	configfile.Install()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func GetAuthState() string {

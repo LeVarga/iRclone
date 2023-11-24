@@ -14,7 +14,7 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
     // MARK: - Properties
     
     lazy var videoView: UIView! = {
-        let vw = UIView(frame: UIScreen.screens[0].bounds)
+        let vw = UIView()
         vw.backgroundColor = UIColor.black
         let gesture = UITapGestureRecognizer(target: self, action: #selector(self.movieViewTapped(_:)))
         vw.addGestureRecognizer(gesture)
@@ -39,7 +39,7 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
     @IBOutlet weak var seekBar: UISlider!
     @IBOutlet var playPauseButton: UIButton!
     @IBOutlet weak var exitButton: UIButton!
-    @IBOutlet var trackSelectionSubView: UIView!
+    @IBOutlet var trackSelectionSubView: UIView! // TODO: Make track menu work in landscape and look less bad
     @IBOutlet var tracksTableView: UITableView! {
         didSet {
             tracksTableView.dataSource = self
@@ -54,35 +54,33 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
         
         //add videoView subview
         self.view.addSubview(self.videoView)
-        
-        //rotation observer
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(self.rotated),
-            name: UIDevice.orientationDidChangeNotification,
-            object: nil)
     }
     
     override func viewDidAppear(_ animated: Bool) {
         assert(url != nil || path != nil, "Missing media url/path")
 
         var media: VLCMedia
-        
+        self.videoView.frame = self.view.bounds
         if let url = url {
             media = VLCMedia(url: url)
             toggleSpinner(on: true)
+            print(url)
         } else {
             media = VLCMedia(path: path!)
         }
         media.addOptions([
-            "network-caching": 3000
+            "network-caching": 1000
         ])
         
-        mediaPlayer.adjustFilterEnabled = true
         mediaPlayer.media = media
         mediaPlayer.delegate = self
         mediaPlayer.drawable = self.videoView
         mediaPlayer.play()
+    }
+    
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        //self.videoView.frame = UIScreen.screens[0].bounds
+        self.videoView.frame = CGRect(origin: CGPointZero, size: size)
     }
     
     // MARK: - Table view data source
@@ -175,7 +173,7 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
     
     //MARK: - VLCMediaPlayerDelegate
     
-    func mediaPlayerTimeChanged(_ aNotification: Notification!) {
+    func mediaPlayerTimeChanged(_ aNotification: Notification) {
         toggleSpinner(on: false)
         if controlsVisible && !seekBarBeingTouched {
             seekBar.setValue(mediaPlayer.time.value?.floatValue ?? 0, animated: false)
@@ -183,8 +181,8 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
             remainingTimeLabel.text = mediaPlayer.remainingTime?.stringValue
         }
     }
-    
-    func mediaPlayerStateChanged(_ aNotification: Notification!) {
+      
+    func mediaPlayerStateChanged(_ aNotification: Notification) {
         //.state is broken, using mediaPlayerTimeChanged for detecting when playback starts instead.
         switch mediaPlayer.state {
         case .error: exitPlayer(0)
@@ -227,11 +225,7 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
         mediaPlayer.media = nil
         dismiss(animated: false, completion: nil)
     }
-    
-    @objc func rotated() {
-        self.videoView.frame = self.view.frame
-    }
-    
+       
     @IBAction func toggleTracksMenuVisible(_ sender: Any) {
         if (trackSelectionSubView.isHidden) {
             tracksTableView.reloadData()
@@ -239,14 +233,12 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
         trackSelectionSubView.isHidden.toggle()
     }
     
-    
     @IBAction func seekBarTouchDown(_ sender: Any) {
         seekBarBeingTouched = true
     }
     @IBAction func seekBarTouchUp(_ sender: Any) {
         seekBarBeingTouched = false
     }
-    
     
     @IBAction func rewind15s(_ sender: Any) {
         mediaPlayer.jumpBackward(15)
