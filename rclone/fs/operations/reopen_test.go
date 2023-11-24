@@ -2,23 +2,23 @@ package operations
 
 import (
 	"context"
+	"errors"
 	"io"
-	"io/ioutil"
 	"testing"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/fstest/mockobject"
+	"github.com/rclone/rclone/lib/readers"
 	"github.com/stretchr/testify/assert"
 )
 
 // check interface
-var _ io.ReadCloser = (*reOpen)(nil)
+var _ io.ReadCloser = (*ReOpen)(nil)
 
 var errorTestError = errors.New("test error")
 
-// this is a wrapper for an mockobject with a custom Open function
+// this is a wrapper for a mockobject with a custom Open function
 //
 // breaks indicate the number of bytes to read before returning an
 // error
@@ -44,21 +44,11 @@ func (o *reOpenTestObject) Open(ctx context.Context, options ...fs.OpenOption) (
 			return nil, errorTestError
 		}
 		// Read N bytes then an error
-		r := io.MultiReader(&io.LimitedReader{R: rc, N: N}, errorReader{errorTestError})
+		r := io.MultiReader(&io.LimitedReader{R: rc, N: N}, readers.ErrorReader{Err: errorTestError})
 		// Wrap with Close in a new readCloser
 		rc = readCloser{Reader: r, Closer: rc}
 	}
 	return rc, nil
-}
-
-// Return an error only
-type errorReader struct {
-	err error
-}
-
-// Read returning an error
-func (er errorReader) Read(p []byte) (n int, err error) {
-	return 0, er.err
 }
 
 func TestReOpen(t *testing.T) {
@@ -83,7 +73,7 @@ func TestReOpen(t *testing.T) {
 					breaks: breaks,
 				}
 				hashOption := &fs.HashesOption{Hashes: hash.NewHashSet(hash.MD5)}
-				return newReOpen(context.Background(), src, hashOption, rangeOption, maxRetries)
+				return NewReOpen(context.Background(), src, maxRetries, hashOption, rangeOption)
 			}
 
 			t.Run("Basics", func(t *testing.T) {
@@ -92,7 +82,7 @@ func TestReOpen(t *testing.T) {
 				assert.NoError(t, err)
 
 				// Check contents read correctly
-				got, err := ioutil.ReadAll(h)
+				got, err := io.ReadAll(h)
 				assert.NoError(t, err)
 				assert.Equal(t, expectedRead, got)
 
@@ -127,7 +117,7 @@ func TestReOpen(t *testing.T) {
 				assert.NoError(t, err)
 
 				// check contents
-				got, err := ioutil.ReadAll(h)
+				got, err := io.ReadAll(h)
 				assert.NoError(t, err)
 				assert.Equal(t, expectedRead, got)
 
@@ -141,7 +131,7 @@ func TestReOpen(t *testing.T) {
 				assert.NoError(t, err)
 
 				// check contents
-				got, err := ioutil.ReadAll(h)
+				got, err := io.ReadAll(h)
 				assert.Equal(t, errorTestError, err)
 				assert.Equal(t, expectedRead[:6], got)
 

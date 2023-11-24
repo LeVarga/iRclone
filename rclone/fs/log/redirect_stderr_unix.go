@@ -1,6 +1,7 @@
 // Log the panic under unix to the log file
 
-// +build !windows,!solaris,!plan9
+//go:build !windows && !solaris && !plan9 && !js
+// +build !windows,!solaris,!plan9,!js
 
 package log
 

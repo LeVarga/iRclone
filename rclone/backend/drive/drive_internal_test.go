@@ -4,21 +4,31 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
-	"io/ioutil"
 	"mime"
+	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/pkg/errors"
 	_ "github.com/rclone/rclone/backend/local"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/filter"
+	"github.com/rclone/rclone/fs/fserrors"
+	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/fs/operations"
+	"github.com/rclone/rclone/fs/sync"
+	"github.com/rclone/rclone/fstest"
 	"github.com/rclone/rclone/fstest/fstests"
+	"github.com/rclone/rclone/lib/random"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 )
 
 func TestDriveScopes(t *testing.T) {
@@ -67,7 +77,7 @@ var additionalMimeTypes = map[string]string{
 // Load the example export formats into exportFormats for testing
 func TestInternalLoadExampleFormats(t *testing.T) {
 	fetchFormatsOnce.Do(func() {})
-	buf, err := ioutil.ReadFile(filepath.FromSlash("test/about.json"))
+	buf, err := os.ReadFile(filepath.FromSlash("test/about.json"))
 	var about struct {
 		ExportFormats map[string][]string `json:"exportFormats,omitempty"`
 		ImportFormats map[string][]string `json:"importFormats,omitempty"`
@@ -105,6 +115,7 @@ func TestInternalParseExtensions(t *testing.T) {
 }
 
 func TestInternalFindExportFormat(t *testing.T) {
+	ctx := context.Background()
 	item := &drive.File{
 		Name:     "file",
 		MimeType: "application/vnd.google-apps.document",
@@ -122,7 +133,7 @@ func TestInternalFindExportFormat(t *testing.T) {
 	} {
 		f := new(Fs)
 		f.exportExtensions = test.extensions
-		gotExtension, gotFilename, gotMimeType, gotIsDocument := f.findExportFormat(item)
+		gotExtension, gotFilename, gotMimeType, gotIsDocument := f.findExportFormat(ctx, item)
 		assert.Equal(t, test.wantExtension, gotExtension)
 		if test.wantExtension != "" {
 			assert.Equal(t, item.Name+gotExtension, gotFilename)
@@ -180,6 +191,69 @@ func TestExtensionsForImportFormats(t *testing.T) {
 	}
 }
 
+func (f *Fs) InternalTestShouldRetry(t *testing.T) {
+	ctx := context.Background()
+	gatewayTimeout := googleapi.Error{
+		Code: 503,
+	}
+	timeoutRetry, timeoutError := f.shouldRetry(ctx, &gatewayTimeout)
+	assert.True(t, timeoutRetry)
+	assert.Equal(t, &gatewayTimeout, timeoutError)
+	generic403 := googleapi.Error{
+		Code: 403,
+	}
+	rLEItem := googleapi.ErrorItem{
+		Reason:  "rateLimitExceeded",
+		Message: "User rate limit exceeded.",
+	}
+	generic403.Errors = append(generic403.Errors, rLEItem)
+	oldStopUpload := f.opt.StopOnUploadLimit
+	oldStopDownload := f.opt.StopOnDownloadLimit
+	f.opt.StopOnUploadLimit = true
+	f.opt.StopOnDownloadLimit = true
+	defer func() {
+		f.opt.StopOnUploadLimit = oldStopUpload
+		f.opt.StopOnDownloadLimit = oldStopDownload
+	}()
+	expectedRLError := fserrors.FatalError(&generic403)
+	rateLimitRetry, rateLimitErr := f.shouldRetry(ctx, &generic403)
+	assert.False(t, rateLimitRetry)
+	assert.Equal(t, rateLimitErr, expectedRLError)
+	dQEItem := googleapi.ErrorItem{
+		Reason: "downloadQuotaExceeded",
+	}
+	generic403.Errors[0] = dQEItem
+	expectedDQError := fserrors.FatalError(&generic403)
+	downloadQuotaRetry, downloadQuotaError := f.shouldRetry(ctx, &generic403)
+	assert.False(t, downloadQuotaRetry)
+	assert.Equal(t, downloadQuotaError, expectedDQError)
+	tDFLEItem := googleapi.ErrorItem{
+		Reason: "teamDriveFileLimitExceeded",
+	}
+	generic403.Errors[0] = tDFLEItem
+	expectedTDFLError := fserrors.FatalError(&generic403)
+	teamDriveFileLimitRetry, teamDriveFileLimitError := f.shouldRetry(ctx, &generic403)
+	assert.False(t, teamDriveFileLimitRetry)
+	assert.Equal(t, teamDriveFileLimitError, expectedTDFLError)
+	qEItem := googleapi.ErrorItem{
+		Reason: "quotaExceeded",
+	}
+	generic403.Errors[0] = qEItem
+	expectedQuotaError := fserrors.FatalError(&generic403)
+	quotaExceededRetry, quotaExceededError := f.shouldRetry(ctx, &generic403)
+	assert.False(t, quotaExceededRetry)
+	assert.Equal(t, quotaExceededError, expectedQuotaError)
+
+	sqEItem := googleapi.ErrorItem{
+		Reason: "storageQuotaExceeded",
+	}
+	generic403.Errors[0] = sqEItem
+	expectedStorageQuotaError := fserrors.FatalError(&generic403)
+	storageQuotaExceededRetry, storageQuotaExceededError := f.shouldRetry(ctx, &generic403)
+	assert.False(t, storageQuotaExceededRetry)
+	assert.Equal(t, storageQuotaExceededError, expectedStorageQuotaError)
+}
+
 func (f *Fs) InternalTestDocumentImport(t *testing.T) {
 	oldAllow := f.opt.AllowImportNameChange
 	f.opt.AllowImportNameChange = true
@@ -190,7 +264,7 @@ func (f *Fs) InternalTestDocumentImport(t *testing.T) {
 	testFilesPath, err := filepath.Abs(filepath.FromSlash("test/files"))
 	require.NoError(t, err)
 
-	testFilesFs, err := fs.NewFs(testFilesPath)
+	testFilesFs, err := fs.NewFs(context.Background(), testFilesPath)
 	require.NoError(t, err)
 
 	_, f.importMimeTypes, err = parseExtensions("odt,ods,doc")
@@ -204,7 +278,7 @@ func (f *Fs) InternalTestDocumentUpdate(t *testing.T) {
 	testFilesPath, err := filepath.Abs(filepath.FromSlash("test/files"))
 	require.NoError(t, err)
 
-	testFilesFs, err := fs.NewFs(testFilesPath)
+	testFilesFs, err := fs.NewFs(context.Background(), testFilesPath)
 	require.NoError(t, err)
 
 	_, f.importMimeTypes, err = parseExtensions("odt,ods,doc")
@@ -268,6 +342,258 @@ func (f *Fs) InternalTestDocumentLink(t *testing.T) {
 	}
 }
 
+const (
+	// from fstest/fstests/fstests.go
+	existingDir    = "hello? sausage"
+	existingFile   = `hello? sausage/êé/Hello, 世界/ " ' @ < > & ? + ≠/z.txt`
+	existingSubDir = "êé"
+)
+
+// TestIntegration/FsMkdir/FsPutFiles/Internal/Shortcuts
+func (f *Fs) InternalTestShortcuts(t *testing.T) {
+	ctx := context.Background()
+	srcObj, err := f.NewObject(ctx, existingFile)
+	require.NoError(t, err)
+	srcHash, err := srcObj.Hash(ctx, hash.MD5)
+	require.NoError(t, err)
+	assert.NotEqual(t, "", srcHash)
+	t.Run("Errors", func(t *testing.T) {
+		_, err := f.makeShortcut(ctx, "", f, "")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "can't be root")
+
+		_, err = f.makeShortcut(ctx, "notfound", f, "dst")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "can't find source")
+
+		_, err = f.makeShortcut(ctx, existingFile, f, existingFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "not overwriting")
+		assert.Contains(t, err.Error(), "existing file")
+
+		_, err = f.makeShortcut(ctx, existingFile, f, existingDir)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "not overwriting")
+		assert.Contains(t, err.Error(), "existing directory")
+	})
+	t.Run("File", func(t *testing.T) {
+		dstObj, err := f.makeShortcut(ctx, existingFile, f, "shortcut.txt")
+		require.NoError(t, err)
+		require.NotNil(t, dstObj)
+		assert.Equal(t, "shortcut.txt", dstObj.Remote())
+		dstHash, err := dstObj.Hash(ctx, hash.MD5)
+		require.NoError(t, err)
+		assert.Equal(t, srcHash, dstHash)
+		require.NoError(t, dstObj.Remove(ctx))
+	})
+	t.Run("Dir", func(t *testing.T) {
+		dstObj, err := f.makeShortcut(ctx, existingDir, f, "shortcutdir")
+		require.NoError(t, err)
+		require.Nil(t, dstObj)
+		entries, err := f.List(ctx, "shortcutdir")
+		require.NoError(t, err)
+		require.Equal(t, 1, len(entries))
+		require.Equal(t, "shortcutdir/"+existingSubDir, entries[0].Remote())
+		require.NoError(t, f.Rmdir(ctx, "shortcutdir"))
+	})
+	t.Run("Command", func(t *testing.T) {
+		_, err := f.Command(ctx, "shortcut", []string{"one"}, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "need exactly 2 arguments")
+
+		_, err = f.Command(ctx, "shortcut", []string{"one", "two"}, map[string]string{
+			"target": "doesnotexistremote:",
+		})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "couldn't find target")
+
+		_, err = f.Command(ctx, "shortcut", []string{"one", "two"}, map[string]string{
+			"target": ".",
+		})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "target is not a drive backend")
+
+		dstObjI, err := f.Command(ctx, "shortcut", []string{existingFile, "shortcut2.txt"}, map[string]string{
+			"target": fs.ConfigString(f),
+		})
+		require.NoError(t, err)
+		dstObj := dstObjI.(*Object)
+		assert.Equal(t, "shortcut2.txt", dstObj.Remote())
+		dstHash, err := dstObj.Hash(ctx, hash.MD5)
+		require.NoError(t, err)
+		assert.Equal(t, srcHash, dstHash)
+		require.NoError(t, dstObj.Remove(ctx))
+
+		dstObjI, err = f.Command(ctx, "shortcut", []string{existingFile, "shortcut3.txt"}, nil)
+		require.NoError(t, err)
+		dstObj = dstObjI.(*Object)
+		assert.Equal(t, "shortcut3.txt", dstObj.Remote())
+		dstHash, err = dstObj.Hash(ctx, hash.MD5)
+		require.NoError(t, err)
+		assert.Equal(t, srcHash, dstHash)
+		require.NoError(t, dstObj.Remove(ctx))
+	})
+}
+
+// TestIntegration/FsMkdir/FsPutFiles/Internal/UnTrash
+func (f *Fs) InternalTestUnTrash(t *testing.T) {
+	ctx := context.Background()
+
+	// Make some objects, one in a subdir
+	contents := random.String(100)
+	file1 := fstest.NewItem("trashDir/toBeTrashed", contents, time.Now())
+	obj1 := fstests.PutTestContents(ctx, t, f, &file1, contents, false)
+	file2 := fstest.NewItem("trashDir/subdir/toBeTrashed", contents, time.Now())
+	_ = fstests.PutTestContents(ctx, t, f, &file2, contents, false)
+
+	// Check objects
+	checkObjects := func() {
+		fstest.CheckListingWithRoot(t, f, "trashDir", []fstest.Item{
+			file1,
+			file2,
+		}, []string{
+			"trashDir/subdir",
+		}, f.Precision())
+	}
+	checkObjects()
+
+	// Make sure we are using the trash
+	require.Equal(t, true, f.opt.UseTrash)
+
+	// Remove the object and the dir
+	require.NoError(t, obj1.Remove(ctx))
+	require.NoError(t, f.Purge(ctx, "trashDir/subdir"))
+
+	// Check objects gone
+	fstest.CheckListingWithRoot(t, f, "trashDir", []fstest.Item{}, []string{}, f.Precision())
+
+	// Restore the object and directory
+	r, err := f.unTrashDir(ctx, "trashDir", true)
+	require.NoError(t, err)
+	assert.Equal(t, unTrashResult{Errors: 0, Untrashed: 2}, r)
+
+	// Check objects restored
+	checkObjects()
+
+	// Remove the test dir
+	require.NoError(t, f.Purge(ctx, "trashDir"))
+}
+
+// TestIntegration/FsMkdir/FsPutFiles/Internal/CopyID
+func (f *Fs) InternalTestCopyID(t *testing.T) {
+	ctx := context.Background()
+	obj, err := f.NewObject(ctx, existingFile)
+	require.NoError(t, err)
+	o := obj.(*Object)
+
+	dir := t.TempDir()
+
+	checkFile := func(name string) {
+		filePath := filepath.Join(dir, name)
+		fi, err := os.Stat(filePath)
+		require.NoError(t, err)
+		assert.Equal(t, int64(100), fi.Size())
+		err = os.Remove(filePath)
+		require.NoError(t, err)
+	}
+
+	t.Run("BadID", func(t *testing.T) {
+		err = f.copyID(ctx, "ID-NOT-FOUND", dir+"/")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "couldn't find id")
+	})
+
+	t.Run("Directory", func(t *testing.T) {
+		rootID, err := f.dirCache.RootID(ctx, false)
+		require.NoError(t, err)
+		err = f.copyID(ctx, rootID, dir+"/")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "can't copy directory")
+	})
+
+	t.Run("WithoutDestName", func(t *testing.T) {
+		err = f.copyID(ctx, o.id, dir+"/")
+		require.NoError(t, err)
+		checkFile(path.Base(existingFile))
+	})
+
+	t.Run("WithDestName", func(t *testing.T) {
+		err = f.copyID(ctx, o.id, dir+"/potato.txt")
+		require.NoError(t, err)
+		checkFile("potato.txt")
+	})
+}
+
+// TestIntegration/FsMkdir/FsPutFiles/Internal/AgeQuery
+func (f *Fs) InternalTestAgeQuery(t *testing.T) {
+	// Check set up for filtering
+	assert.True(t, f.Features().FilterAware)
+
+	opt := &filter.Opt{}
+	err := opt.MaxAge.Set("1h")
+	assert.NoError(t, err)
+	flt, err := filter.NewFilter(opt)
+	assert.NoError(t, err)
+
+	defCtx := context.Background()
+	fltCtx := filter.ReplaceConfig(defCtx, flt)
+
+	testCtx1 := fltCtx
+	testCtx2 := filter.SetUseFilter(testCtx1, true)
+	testCtx3, testCancel := context.WithCancel(testCtx2)
+	testCtx4 := filter.SetUseFilter(testCtx3, false)
+	testCancel()
+	assert.False(t, filter.GetUseFilter(testCtx1))
+	assert.True(t, filter.GetUseFilter(testCtx2))
+	assert.True(t, filter.GetUseFilter(testCtx3))
+	assert.False(t, filter.GetUseFilter(testCtx4))
+
+	subRemote := fmt.Sprintf("%s:%s/%s", f.Name(), f.Root(), "agequery-testdir")
+	subFsResult, err := fs.NewFs(defCtx, subRemote)
+	require.NoError(t, err)
+	subFs, isDriveFs := subFsResult.(*Fs)
+	require.True(t, isDriveFs)
+
+	tempDir1 := t.TempDir()
+	tempFs1, err := fs.NewFs(defCtx, tempDir1)
+	require.NoError(t, err)
+
+	tempDir2 := t.TempDir()
+	tempFs2, err := fs.NewFs(defCtx, tempDir2)
+	require.NoError(t, err)
+
+	file1 := fstest.Item{ModTime: time.Now(), Path: "agequery.txt"}
+	_ = fstests.PutTestContents(defCtx, t, tempFs1, &file1, "abcxyz", true)
+
+	// validate sync/copy
+	const timeQuery = "(modifiedTime >= '"
+
+	assert.NoError(t, sync.CopyDir(defCtx, subFs, tempFs1, false))
+	assert.NotContains(t, subFs.lastQuery, timeQuery)
+
+	assert.NoError(t, sync.CopyDir(fltCtx, subFs, tempFs1, false))
+	assert.Contains(t, subFs.lastQuery, timeQuery)
+
+	assert.NoError(t, sync.CopyDir(fltCtx, tempFs2, subFs, false))
+	assert.Contains(t, subFs.lastQuery, timeQuery)
+
+	assert.NoError(t, sync.CopyDir(defCtx, tempFs2, subFs, false))
+	assert.NotContains(t, subFs.lastQuery, timeQuery)
+
+	// validate list/walk
+	devNull, errOpen := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	require.NoError(t, errOpen)
+	defer func() {
+		_ = devNull.Close()
+	}()
+
+	assert.NoError(t, operations.List(defCtx, subFs, devNull))
+	assert.NotContains(t, subFs.lastQuery, timeQuery)
+
+	assert.NoError(t, operations.List(fltCtx, subFs, devNull))
+	assert.Contains(t, subFs.lastQuery, timeQuery)
+}
+
 func (f *Fs) InternalTest(t *testing.T) {
 	// These tests all depend on each other so run them as nested tests
 	t.Run("DocumentImport", func(t *testing.T) {
@@ -282,6 +608,11 @@ func (f *Fs) InternalTest(t *testing.T) {
 			})
 		})
 	})
+	t.Run("Shortcuts", f.InternalTestShortcuts)
+	t.Run("UnTrash", f.InternalTestUnTrash)
+	t.Run("CopyID", f.InternalTestCopyID)
+	t.Run("AgeQuery", f.InternalTestAgeQuery)
+	t.Run("ShouldRetry", f.InternalTestShouldRetry)
 }
 
 var _ fstests.InternalTester = (*Fs)(nil)

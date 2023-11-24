@@ -2,6 +2,7 @@ package putio
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -9,7 +10,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/putdotio/go-putio/putio"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/fserrors"
@@ -82,7 +82,7 @@ func (o *Object) Hash(ctx context.Context, t hash.Type) (string, error) {
 	}
 	err := o.readEntryAndSetMetadata(ctx)
 	if err != nil {
-		return "", errors.Wrap(err, "failed to read hash from metadata")
+		return "", fmt.Errorf("failed to read hash from metadata: %w", err)
 	}
 	return o.file.CRC32, nil
 }
@@ -115,7 +115,7 @@ func (o *Object) MimeType(ctx context.Context) string {
 
 // setMetadataFromEntry sets the fs data from a putio.File
 //
-// This isn't a complete set of metadata and has an inacurate date
+// This isn't a complete set of metadata and has an inaccurate date
 func (o *Object) setMetadataFromEntry(info putio.File) error {
 	o.file = &info
 	o.modtime = info.UpdatedAt.Time
@@ -125,7 +125,7 @@ func (o *Object) setMetadataFromEntry(info putio.File) error {
 // Reads the entry for a file from putio
 func (o *Object) readEntry(ctx context.Context) (f *putio.File, err error) {
 	// defer log.Trace(o, "")("f=%+v, err=%v", f, &err)
-	leaf, directoryID, err := o.fs.dirCache.FindRootAndPath(ctx, o.remote, false)
+	leaf, directoryID, err := o.fs.dirCache.FindPath(ctx, o.remote, false)
 	if err != nil {
 		if err == fs.ErrorDirNotFound {
 			return nil, fs.ErrorObjectNotFound
@@ -137,7 +137,7 @@ func (o *Object) readEntry(ctx context.Context) (f *putio.File, err error) {
 	}
 	err = o.fs.pacer.Call(func() (bool, error) {
 		// fs.Debugf(o, "requesting child. directoryID: %s, name: %s", directoryID, leaf)
-		req, err := o.fs.client.NewRequest(ctx, "GET", "/v2/files/"+directoryID+"/child?name="+url.QueryEscape(enc.FromStandardName(leaf)), nil)
+		req, err := o.fs.client.NewRequest(ctx, "GET", "/v2/files/"+directoryID+"/child?name="+url.QueryEscape(o.fs.opt.Enc.FromStandardName(leaf)), nil)
 		if err != nil {
 			return false, err
 		}
@@ -145,13 +145,13 @@ func (o *Object) readEntry(ctx context.Context) (f *putio.File, err error) {
 		if perr, ok := err.(*putio.ErrorResponse); ok && perr.Response.StatusCode == 404 {
 			return false, fs.ErrorObjectNotFound
 		}
-		return shouldRetry(err)
+		return shouldRetry(ctx, err)
 	})
 	if err != nil {
 		return nil, err
 	}
 	if resp.File.IsDir() {
-		return nil, fs.ErrorNotAFile
+		return nil, fs.ErrorIsDir
 	}
 	return &resp.File, err
 }
@@ -220,7 +220,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 	var storageURL string
 	err = o.fs.pacer.Call(func() (bool, error) {
 		storageURL, err = o.fs.client.Files.URL(ctx, o.file.ID, true)
-		return shouldRetry(err)
+		return shouldRetry(ctx, err)
 	})
 	if err != nil {
 		return
@@ -229,11 +229,10 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 	var resp *http.Response
 	headers := fs.OpenOptionHeaders(options)
 	err = o.fs.pacer.Call(func() (bool, error) {
-		req, err := http.NewRequest(http.MethodGet, storageURL, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, storageURL, nil)
 		if err != nil {
-			return shouldRetry(err)
+			return shouldRetry(ctx, err)
 		}
-		req = req.WithContext(ctx) // go1.13 can use NewRequestWithContext
 		req.Header.Set("User-Agent", o.fs.client.UserAgent)
 
 		// merge headers with extra headers
@@ -241,19 +240,28 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 			req.Header.Set(header, value)
 		}
 		// fs.Debugf(o, "opening file: id=%d", o.file.ID)
-		resp, err = http.DefaultClient.Do(req)
-		return shouldRetry(err)
+		resp, err = o.fs.httpClient.Do(req)
+		if err != nil {
+			return shouldRetry(ctx, err)
+		}
+		if err := checkStatusCode(resp, 200, 206); err != nil {
+			return shouldRetry(ctx, err)
+		}
+		return false, nil
 	})
 	if perr, ok := err.(*putio.ErrorResponse); ok && perr.Response.StatusCode >= 400 && perr.Response.StatusCode <= 499 {
 		_ = resp.Body.Close()
 		return nil, fserrors.NoRetryError(err)
 	}
-	return resp.Body, err
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
 }
 
 // Update the already existing object
 //
-// Copy the reader into the object updating modTime and size
+// Copy the reader into the object updating modTime and size.
 //
 // The new object may have been created if an error is returned
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (err error) {
@@ -267,7 +275,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	if err != nil {
 		return err
 	}
-	newObj, err := o.fs.PutUnchecked(ctx, in, src, options...)
+	newObj, err := o.fs.putUnchecked(ctx, in, src, o.remote, options...)
 	if err != nil {
 		return err
 	}
@@ -281,6 +289,6 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 	return o.fs.pacer.Call(func() (bool, error) {
 		// fs.Debugf(o, "removing file: id=%d", o.file.ID)
 		err = o.fs.client.Files.Delete(ctx, o.file.ID)
-		return shouldRetry(err)
+		return shouldRetry(ctx, err)
 	})
 }

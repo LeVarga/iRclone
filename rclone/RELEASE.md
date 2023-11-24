@@ -4,107 +4,142 @@ This file describes how to make the various kinds of releases
 
 ## Extra required software for making a release
 
-  * [github-release](https://github.com/aktau/github-release) for uploading packages
+  * [gh the github cli](https://github.com/cli/cli) for uploading packages
   * pandoc for making the html and man pages
 
 ## Making a release
 
+  * git checkout master # see below for stable branch
+  * git pull # IMPORTANT
   * git status - make sure everything is checked in
-  * Check travis & appveyor builds are green
-  * make check
+  * Check GitHub actions build for master is Green
   * make test # see integration test server or run locally
   * make tag
-  * edit docs/content/changelog.md
+  * edit docs/content/changelog.md # make sure to remove duplicate logs from point releases
   * make tidy
   * make doc
   * git status - to check for new man pages - git add them
   * git commit -a -v -m "Version v1.XX.0"
   * make retag
-  * git push --tags origin master
-  * # Wait for the appveyor and travis builds to complete then...
+  * git push origin # without --follow-tags so it doesn't push the tag if it fails
+  * git push --follow-tags origin
+  * # Wait for the GitHub builds to complete then...
   * make fetch_binaries
   * make tarball
+  * make vendorball
   * make sign_upload
   * make check_sign
   * make upload
   * make upload_website
   * make upload_github
-  * make startdev
-  * # announce with forum post, twitter post, G+ post
+  * make startdev # make startstable for stable branch
+  * # announce with forum post, twitter post, patreon post
 
-Early in the next release cycle update the vendored dependencies
+## Update dependencies
+
+Early in the next release cycle update the dependencies
 
   * Review any pinned packages in go.mod and remove if possible
-  * make update
-  * git status
-  * git add new files
+  * make updatedirect
+  * make
   * git commit -a -v
+  * make update
+  * make
+  * roll back any updates which didn't compile
+  * git commit -a -v --amend
 
-If `make update` fails with errors like this:
+Note that `make update` updates all direct and indirect dependencies
+and there can occasionally be forwards compatibility problems with
+doing that so it may be necessary to roll back dependencies to the
+version specified by `make updatedirect` in order to get rclone to
+build.
 
-```
-# github.com/cpuguy83/go-md2man/md2man
-../../../../pkg/mod/github.com/cpuguy83/go-md2man@v1.0.8/md2man/md2man.go:11:16: undefined: blackfriday.EXTENSION_NO_INTRA_EMPHASIS
-../../../../pkg/mod/github.com/cpuguy83/go-md2man@v1.0.8/md2man/md2man.go:12:16: undefined: blackfriday.EXTENSION_TABLES
-```
+## Tidy beta
 
-Can be fixed with
+At some point after the release run
 
-    * GO111MODULE=on go get -u github.com/russross/blackfriday@v1.5.2
-    * GO111MODULE=on go mod tidy
-    * GO111MODULE=on go mod vendor
- 
+    bin/tidy-beta v1.55
+
+where the version number is that of a couple ago to remove old beta binaries.
 
 ## Making a point release
 
 If rclone needs a point release due to some horrendous bug:
 
+Set vars
+
+  * BASE_TAG=v1.XX          # e.g. v1.52
+  * NEW_TAG=${BASE_TAG}.Y   # e.g. v1.52.1
+  * echo $BASE_TAG $NEW_TAG # v1.52 v1.52.1
+
 First make the release branch.  If this is a second point release then
 this will be done already.
 
-  * BASE_TAG=v1.XX          # eg v1.49
-  * NEW_TAG=${BASE_TAG}.Y   # eg v1.49.1
-  * echo $BASE_TAG $NEW_TAG # v1.49 v1.49.1
-  * git branch ${BASE_TAG} ${BASE_TAG}-fixes
+  * git co -b ${BASE_TAG}-stable ${BASE_TAG}.0
+  * make startstable
 
 Now
 
-  * git co ${BASE_TAG}-fixes
+  * git co ${BASE_TAG}-stable
   * git cherry-pick any fixes
-  * Test (see above)
-  * make NEXT_VERSION=${NEW_TAG} tag
-  * edit docs/content/changelog.md
-  * make TAG=${NEW_TAG} doc
-  * git commit -a -v -m "Version ${NEW_TAG}"
-  * git tag -d ${NEW_TAG}
-  * git tag -s -m "Version ${NEW_TAG}" ${NEW_TAG}
-  * git push --tags -u origin ${BASE_TAG}-fixes
-  * Wait for builds to complete
-  * make BRANCH_PATH= TAG=${NEW_TAG} fetch_binaries
-  * make TAG=${NEW_TAG} tarball
-  * make TAG=${NEW_TAG} sign_upload
-  * make TAG=${NEW_TAG} check_sign
-  * make TAG=${NEW_TAG} upload
-  * make TAG=${NEW_TAG} upload_website
-  * make TAG=${NEW_TAG} upload_github
-  * NB this overwrites the current beta so we need to do this
+  * Do the steps as above
+  * make startstable
   * git co master
-  * make LAST_TAG=${NEW_TAG} startdev
-  * # cherry pick the changes to the changelog and VERSION
-  * git checkout ${BASE_TAG}-fixes VERSION docs/content/changelog.md
-  * git commit --amend
+  * `#` cherry pick the changes to the changelog - check the diff to make sure it is correct
+  * git checkout ${BASE_TAG}-stable docs/content/changelog.md
+  * git commit -a -v -m "Changelog updates from Version ${NEW_TAG}"
   * git push
-  * Announce!
+
+## Update the website between releases
+
+Create an update website branch based off the last release
+
+    git co -b update-website
+
+If the branch already exists, double check there are no commits that need saving.
+
+Now reset the branch to the last release
+
+    git reset --hard v1.64.0
+
+Create the changes, check them in, test with `make serve` then
+
+    make upload_test_website
+
+Check out https://test.rclone.org and when happy
+
+    make upload_website
+
+Cherry pick any changes back to master and the stable branch if it is active.
 
 ## Making a manual build of docker
 
-The rclone docker image should autobuild on docker hub.  If it doesn't
+The rclone docker image should autobuild on via GitHub actions.  If it doesn't
 or needs to be updated then rebuild like this.
 
+See: https://github.com/ilteoood/docker_buildx/issues/19
+See: https://github.com/ilteoood/docker_buildx/blob/master/scripts/install_buildx.sh
+
 ```
-docker build -t rclone/rclone:1.49.1 -t rclone/rclone:1.49 -t rclone/rclone:1 -t rclone/rclone:latest .
-docker push rclone/rclone:1.49.1
-docker push rclone/rclone:1.49
+git co v1.54.1
+docker pull golang
+export DOCKER_CLI_EXPERIMENTAL=enabled
+docker buildx create --name actions_builder --use
+docker run --rm --privileged docker/binfmt:820fdd95a9972a5308930a2bdfb8573dd4447ad3
+docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+SUPPORTED_PLATFORMS=$(docker buildx inspect --bootstrap | grep 'Platforms:*.*' | cut -d : -f2,3)
+echo "Supported platforms: $SUPPORTED_PLATFORMS"
+docker buildx build --platform linux/amd64,linux/386,linux/arm64,linux/arm/v7 -t rclone/rclone:1.54.1 -t rclone/rclone:1.54 -t rclone/rclone:1 -t rclone/rclone:latest --push .
+docker buildx stop actions_builder
+```
+
+### Old build for linux/amd64 only
+
+```
+docker pull golang
+docker build --rm --ulimit memlock=67108864  -t rclone/rclone:1.52.0 -t rclone/rclone:1.52 -t rclone/rclone:1 -t rclone/rclone:latest .
+docker push rclone/rclone:1.52.0
+docker push rclone/rclone:1.52
 docker push rclone/rclone:1
 docker push rclone/rclone:latest
 ```

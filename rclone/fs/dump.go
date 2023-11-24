@@ -3,8 +3,6 @@ package fs
 import (
 	"fmt"
 	"strings"
-
-	"github.com/pkg/errors"
 )
 
 // DumpFlags describes the Dump options in force
@@ -80,7 +78,7 @@ func (f *DumpFlags) Set(s string) error {
 			}
 		}
 		if !found {
-			return errors.Errorf("Unknown dump flag %q", part)
+			return fmt.Errorf("unknown dump flag %q", part)
 		}
 	}
 	*f = flags
@@ -90,4 +88,12 @@ func (f *DumpFlags) Set(s string) error {
 // Type of the value
 func (f *DumpFlags) Type() string {
 	return "DumpFlags"
+}
+
+// UnmarshalJSON makes sure the value can be parsed as a string or integer in JSON
+func (f *DumpFlags) UnmarshalJSON(in []byte) error {
+	return UnmarshalJSONFlag(in, f, func(i int64) error {
+		*f = (DumpFlags)(i)
+		return nil
+	})
 }

@@ -4,6 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path"
 	"testing"
 	"time"
 
@@ -12,6 +15,8 @@ import (
 	"github.com/rclone/rclone/fs/operations"
 	"github.com/rclone/rclone/fs/rc"
 	"github.com/rclone/rclone/fstest"
+	"github.com/rclone/rclone/lib/diskusage"
+	"github.com/rclone/rclone/lib/rest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +36,6 @@ func rcNewRun(t *testing.T, method string) (*fstest.Run, *rc.Call) {
 // operations/about: Return the space used on the remote
 func TestRcAbout(t *testing.T) {
 	r, call := rcNewRun(t, "operations/about")
-	defer r.Finalise()
 	r.Mkdir(context.Background(), r.Fremote)
 
 	// Will get an error if remote doesn't support About
@@ -54,7 +58,6 @@ func TestRcAbout(t *testing.T) {
 // operations/cleanup: Remove trashed files in the remote or path
 func TestRcCleanup(t *testing.T) {
 	r, call := rcNewRun(t, "operations/cleanup")
-	defer r.Finalise()
 
 	in := rc.Params{
 		"fs": r.LocalName,
@@ -68,11 +71,10 @@ func TestRcCleanup(t *testing.T) {
 // operations/copyfile: Copy a file from source remote to destination remote
 func TestRcCopyfile(t *testing.T) {
 	r, call := rcNewRun(t, "operations/copyfile")
-	defer r.Finalise()
 	file1 := r.WriteFile("file1", "file1 contents", t1)
 	r.Mkdir(context.Background(), r.Fremote)
-	fstest.CheckItems(t, r.Flocal, file1)
-	fstest.CheckItems(t, r.Fremote)
+	r.CheckLocalItems(t, file1)
+	r.CheckRemoteItems(t)
 
 	in := rc.Params{
 		"srcFs":     r.LocalName,
@@ -84,19 +86,18 @@ func TestRcCopyfile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, rc.Params(nil), out)
 
-	fstest.CheckItems(t, r.Flocal, file1)
+	r.CheckLocalItems(t, file1)
 	file1.Path = "file1-renamed"
-	fstest.CheckItems(t, r.Fremote, file1)
+	r.CheckRemoteItems(t, file1)
 }
 
 // operations/copyurl: Copy the URL to the object
 func TestRcCopyurl(t *testing.T) {
 	r, call := rcNewRun(t, "operations/copyurl")
-	defer r.Finalise()
 	contents := "file1 contents\n"
 	file1 := r.WriteFile("file1", contents, t1)
 	r.Mkdir(context.Background(), r.Fremote)
-	fstest.CheckItems(t, r.Fremote)
+	r.CheckRemoteItems(t)
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, err := w.Write([]byte(contents))
@@ -109,9 +110,21 @@ func TestRcCopyurl(t *testing.T) {
 		"remote":       "file1",
 		"url":          ts.URL,
 		"autoFilename": false,
+		"noClobber":    false,
 	}
 	out, err := call.Fn(context.Background(), in)
 	require.NoError(t, err)
+	assert.Equal(t, rc.Params(nil), out)
+
+	in = rc.Params{
+		"fs":           r.FremoteName,
+		"remote":       "file1",
+		"url":          ts.URL,
+		"autoFilename": false,
+		"noClobber":    true,
+	}
+	out, err = call.Fn(context.Background(), in)
+	require.Error(t, err)
 	assert.Equal(t, rc.Params(nil), out)
 
 	urlFileName := "filename.txt"
@@ -120,6 +133,7 @@ func TestRcCopyurl(t *testing.T) {
 		"remote":       "",
 		"url":          ts.URL + "/" + urlFileName,
 		"autoFilename": true,
+		"noClobber":    false,
 	}
 	out, err = call.Fn(context.Background(), in)
 	require.NoError(t, err)
@@ -130,6 +144,7 @@ func TestRcCopyurl(t *testing.T) {
 		"remote":       "",
 		"url":          ts.URL,
 		"autoFilename": true,
+		"noClobber":    false,
 	}
 	out, err = call.Fn(context.Background(), in)
 	require.Error(t, err)
@@ -141,12 +156,11 @@ func TestRcCopyurl(t *testing.T) {
 // operations/delete: Remove files in the path
 func TestRcDelete(t *testing.T) {
 	r, call := rcNewRun(t, "operations/delete")
-	defer r.Finalise()
 
 	file1 := r.WriteObject(context.Background(), "small", "1234567890", t2)                                                                                           // 10 bytes
 	file2 := r.WriteObject(context.Background(), "medium", "------------------------------------------------------------", t1)                                        // 60 bytes
 	file3 := r.WriteObject(context.Background(), "large", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", t1) // 100 bytes
-	fstest.CheckItems(t, r.Fremote, file1, file2, file3)
+	r.CheckRemoteItems(t, file1, file2, file3)
 
 	in := rc.Params{
 		"fs": r.FremoteName,
@@ -155,17 +169,16 @@ func TestRcDelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, rc.Params(nil), out)
 
-	fstest.CheckItems(t, r.Fremote)
+	r.CheckRemoteItems(t)
 }
 
 // operations/deletefile: Remove the single file pointed to
 func TestRcDeletefile(t *testing.T) {
 	r, call := rcNewRun(t, "operations/deletefile")
-	defer r.Finalise()
 
 	file1 := r.WriteObject(context.Background(), "small", "1234567890", t2)                                                    // 10 bytes
 	file2 := r.WriteObject(context.Background(), "medium", "------------------------------------------------------------", t1) // 60 bytes
-	fstest.CheckItems(t, r.Fremote, file1, file2)
+	r.CheckRemoteItems(t, file1, file2)
 
 	in := rc.Params{
 		"fs":     r.FremoteName,
@@ -175,18 +188,17 @@ func TestRcDeletefile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, rc.Params(nil), out)
 
-	fstest.CheckItems(t, r.Fremote, file2)
+	r.CheckRemoteItems(t, file2)
 }
 
-// operations/list: List the given remote and path in JSON format
+// operations/list: List the given remote and path in JSON format.
 func TestRcList(t *testing.T) {
 	r, call := rcNewRun(t, "operations/list")
-	defer r.Finalise()
 
 	file1 := r.WriteObject(context.Background(), "a", "a", t1)
 	file2 := r.WriteObject(context.Background(), "subdir/b", "bb", t2)
 
-	fstest.CheckItems(t, r.Fremote, file1, file2)
+	r.CheckRemoteItems(t, file1, file2)
 
 	in := rc.Params{
 		"fs":     r.FremoteName,
@@ -243,13 +255,120 @@ func TestRcList(t *testing.T) {
 	checkFile2(list[2])
 }
 
+// operations/stat: Stat the given remote and path in JSON format.
+func TestRcStat(t *testing.T) {
+	r, call := rcNewRun(t, "operations/stat")
+
+	file1 := r.WriteObject(context.Background(), "subdir/a", "a", t1)
+
+	r.CheckRemoteItems(t, file1)
+
+	fetch := func(t *testing.T, remotePath string) *operations.ListJSONItem {
+		in := rc.Params{
+			"fs":     r.FremoteName,
+			"remote": remotePath,
+		}
+		out, err := call.Fn(context.Background(), in)
+		require.NoError(t, err)
+		return out["item"].(*operations.ListJSONItem)
+	}
+
+	t.Run("Root", func(t *testing.T) {
+		stat := fetch(t, "")
+		assert.Equal(t, "", stat.Path)
+		assert.Equal(t, "", stat.Name)
+		assert.Equal(t, int64(-1), stat.Size)
+		assert.Equal(t, "inode/directory", stat.MimeType)
+		assert.Equal(t, true, stat.IsDir)
+	})
+
+	t.Run("File", func(t *testing.T) {
+		stat := fetch(t, "subdir/a")
+		assert.WithinDuration(t, t1, stat.ModTime.When, time.Second)
+		assert.Equal(t, "subdir/a", stat.Path)
+		assert.Equal(t, "a", stat.Name)
+		assert.Equal(t, int64(1), stat.Size)
+		assert.Equal(t, "application/octet-stream", stat.MimeType)
+		assert.Equal(t, false, stat.IsDir)
+	})
+
+	t.Run("Subdir", func(t *testing.T) {
+		stat := fetch(t, "subdir")
+		assert.Equal(t, "subdir", stat.Path)
+		assert.Equal(t, "subdir", stat.Name)
+		assert.Equal(t, int64(-1), stat.Size)
+		assert.Equal(t, "inode/directory", stat.MimeType)
+		assert.Equal(t, true, stat.IsDir)
+	})
+
+	t.Run("NotFound", func(t *testing.T) {
+		stat := fetch(t, "notfound")
+		assert.Nil(t, stat)
+	})
+}
+
+// operations/settier: Set the storage tier of a fs
+func TestRcSetTier(t *testing.T) {
+	ctx := context.Background()
+	r, call := rcNewRun(t, "operations/settier")
+	if !r.Fremote.Features().SetTier {
+		t.Skip("settier not supported")
+	}
+	file1 := r.WriteObject(context.Background(), "file1", "file1 contents", t1)
+	r.CheckRemoteItems(t, file1)
+
+	// Because we don't know what the current tier options here are, let's
+	// just get the current tier, and reuse that
+	o, err := r.Fremote.NewObject(ctx, file1.Path)
+	require.NoError(t, err)
+	trr, ok := o.(fs.GetTierer)
+	require.True(t, ok)
+	ctier := trr.GetTier()
+	in := rc.Params{
+		"fs":   r.FremoteName,
+		"tier": ctier,
+	}
+	out, err := call.Fn(context.Background(), in)
+	require.NoError(t, err)
+	assert.Equal(t, rc.Params(nil), out)
+
+}
+
+// operations/settier: Set the storage tier of a file
+func TestRcSetTierFile(t *testing.T) {
+	ctx := context.Background()
+	r, call := rcNewRun(t, "operations/settierfile")
+	if !r.Fremote.Features().SetTier {
+		t.Skip("settier not supported")
+	}
+	file1 := r.WriteObject(context.Background(), "file1", "file1 contents", t1)
+	r.CheckRemoteItems(t, file1)
+
+	// Because we don't know what the current tier options here are, let's
+	// just get the current tier, and reuse that
+	o, err := r.Fremote.NewObject(ctx, file1.Path)
+	require.NoError(t, err)
+	trr, ok := o.(fs.GetTierer)
+	require.True(t, ok)
+	ctier := trr.GetTier()
+	in := rc.Params{
+		"fs":     r.FremoteName,
+		"remote": "file1",
+		"tier":   ctier,
+	}
+	out, err := call.Fn(context.Background(), in)
+	require.NoError(t, err)
+	assert.Equal(t, rc.Params(nil), out)
+
+}
+
 // operations/mkdir: Make a destination directory or container
 func TestRcMkdir(t *testing.T) {
+	ctx := context.Background()
 	r, call := rcNewRun(t, "operations/mkdir")
-	defer r.Finalise()
 	r.Mkdir(context.Background(), r.Fremote)
 
-	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{}, fs.GetModifyWindow(r.Fremote))
+	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{}, fs.GetModifyWindow(ctx, r.Fremote))
 
 	in := rc.Params{
 		"fs":     r.FremoteName,
@@ -259,17 +378,16 @@ func TestRcMkdir(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, rc.Params(nil), out)
 
-	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{"subdir"}, fs.GetModifyWindow(r.Fremote))
+	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{"subdir"}, fs.GetModifyWindow(ctx, r.Fremote))
 }
 
 // operations/movefile: Move a file from source remote to destination remote
 func TestRcMovefile(t *testing.T) {
 	r, call := rcNewRun(t, "operations/movefile")
-	defer r.Finalise()
 	file1 := r.WriteFile("file1", "file1 contents", t1)
 	r.Mkdir(context.Background(), r.Fremote)
-	fstest.CheckItems(t, r.Flocal, file1)
-	fstest.CheckItems(t, r.Fremote)
+	r.CheckLocalItems(t, file1)
+	r.CheckRemoteItems(t)
 
 	in := rc.Params{
 		"srcFs":     r.LocalName,
@@ -281,18 +399,18 @@ func TestRcMovefile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, rc.Params(nil), out)
 
-	fstest.CheckItems(t, r.Flocal)
+	r.CheckLocalItems(t)
 	file1.Path = "file1-renamed"
-	fstest.CheckItems(t, r.Fremote, file1)
+	r.CheckRemoteItems(t, file1)
 }
 
 // operations/purge: Remove a directory or container and all of its contents
 func TestRcPurge(t *testing.T) {
+	ctx := context.Background()
 	r, call := rcNewRun(t, "operations/purge")
-	defer r.Finalise()
 	file1 := r.WriteObject(context.Background(), "subdir/file1", "subdir/file1 contents", t1)
 
-	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{file1}, []string{"subdir"}, fs.GetModifyWindow(r.Fremote))
+	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{file1}, []string{"subdir"}, fs.GetModifyWindow(ctx, r.Fremote))
 
 	in := rc.Params{
 		"fs":     r.FremoteName,
@@ -302,17 +420,17 @@ func TestRcPurge(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, rc.Params(nil), out)
 
-	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{}, fs.GetModifyWindow(r.Fremote))
+	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{}, fs.GetModifyWindow(ctx, r.Fremote))
 }
 
 // operations/rmdir: Remove an empty directory or container
 func TestRcRmdir(t *testing.T) {
+	ctx := context.Background()
 	r, call := rcNewRun(t, "operations/rmdir")
-	defer r.Finalise()
 	r.Mkdir(context.Background(), r.Fremote)
 	assert.NoError(t, r.Fremote.Mkdir(context.Background(), "subdir"))
 
-	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{"subdir"}, fs.GetModifyWindow(r.Fremote))
+	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{"subdir"}, fs.GetModifyWindow(ctx, r.Fremote))
 
 	in := rc.Params{
 		"fs":     r.FremoteName,
@@ -322,18 +440,18 @@ func TestRcRmdir(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, rc.Params(nil), out)
 
-	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{}, fs.GetModifyWindow(r.Fremote))
+	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{}, fs.GetModifyWindow(ctx, r.Fremote))
 }
 
 // operations/rmdirs: Remove all the empty directories in the path
 func TestRcRmdirs(t *testing.T) {
+	ctx := context.Background()
 	r, call := rcNewRun(t, "operations/rmdirs")
-	defer r.Finalise()
 	r.Mkdir(context.Background(), r.Fremote)
 	assert.NoError(t, r.Fremote.Mkdir(context.Background(), "subdir"))
 	assert.NoError(t, r.Fremote.Mkdir(context.Background(), "subdir/subsubdir"))
 
-	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{"subdir", "subdir/subsubdir"}, fs.GetModifyWindow(r.Fremote))
+	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{"subdir", "subdir/subsubdir"}, fs.GetModifyWindow(ctx, r.Fremote))
 
 	in := rc.Params{
 		"fs":     r.FremoteName,
@@ -343,7 +461,7 @@ func TestRcRmdirs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, rc.Params(nil), out)
 
-	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{}, fs.GetModifyWindow(r.Fremote))
+	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{}, fs.GetModifyWindow(ctx, r.Fremote))
 
 	assert.NoError(t, r.Fremote.Mkdir(context.Background(), "subdir"))
 	assert.NoError(t, r.Fremote.Mkdir(context.Background(), "subdir/subsubdir"))
@@ -357,18 +475,17 @@ func TestRcRmdirs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, rc.Params(nil), out)
 
-	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{"subdir"}, fs.GetModifyWindow(r.Fremote))
+	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{}, []string{"subdir"}, fs.GetModifyWindow(ctx, r.Fremote))
 
 }
 
 // operations/size: Count the number of bytes and files in remote
 func TestRcSize(t *testing.T) {
 	r, call := rcNewRun(t, "operations/size")
-	defer r.Finalise()
 	file1 := r.WriteObject(context.Background(), "small", "1234567890", t2)                                                           // 10 bytes
 	file2 := r.WriteObject(context.Background(), "subdir/medium", "------------------------------------------------------------", t1) // 60 bytes
 	file3 := r.WriteObject(context.Background(), "subdir/subsubdir/large", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", t1)  // 50 bytes
-	fstest.CheckItems(t, r.Fremote, file1, file2, file3)
+	r.CheckRemoteItems(t, file1, file2, file3)
 
 	in := rc.Params{
 		"fs": r.FremoteName,
@@ -376,18 +493,20 @@ func TestRcSize(t *testing.T) {
 	out, err := call.Fn(context.Background(), in)
 	require.NoError(t, err)
 	assert.Equal(t, rc.Params{
-		"count": int64(3),
-		"bytes": int64(120),
+		"count":    int64(3),
+		"bytes":    int64(120),
+		"sizeless": int64(0),
 	}, out)
 }
 
 // operations/publiclink: Create or retrieve a public link to the given file or folder.
 func TestRcPublicLink(t *testing.T) {
 	r, call := rcNewRun(t, "operations/publiclink")
-	defer r.Finalise()
 	in := rc.Params{
 		"fs":     r.FremoteName,
 		"remote": "",
+		"expire": "5m",
+		"unlink": false,
 	}
 	_, err := call.Fn(context.Background(), in)
 	require.Error(t, err)
@@ -397,7 +516,6 @@ func TestRcPublicLink(t *testing.T) {
 // operations/fsinfo: Return information about the remote
 func TestRcFsInfo(t *testing.T) {
 	r, call := rcNewRun(t, "operations/fsinfo")
-	defer r.Finalise()
 	in := rc.Params{
 		"fs": r.FremoteName,
 	}
@@ -419,4 +537,124 @@ func TestRcFsInfo(t *testing.T) {
 	}
 	assert.Equal(t, features, got["Features"])
 
+}
+
+// operations/uploadfile : Tests if upload file succeeds
+func TestUploadFile(t *testing.T) {
+	r, call := rcNewRun(t, "operations/uploadfile")
+	ctx := context.Background()
+
+	testFileName := "uploadfile-test.txt"
+	testFileContent := "Hello World"
+	r.WriteFile(testFileName, testFileContent, t1)
+	testItem1 := fstest.NewItem(testFileName, testFileContent, t1)
+	testItem2 := fstest.NewItem(path.Join("subdir", testFileName), testFileContent, t1)
+
+	currentFile, err := os.Open(path.Join(r.LocalName, testFileName))
+	require.NoError(t, err)
+
+	defer func() {
+		assert.NoError(t, currentFile.Close())
+	}()
+
+	formReader, contentType, _, err := rest.MultipartUpload(ctx, currentFile, url.Values{}, "file", testFileName)
+	require.NoError(t, err)
+
+	httpReq := httptest.NewRequest("POST", "/", formReader)
+	httpReq.Header.Add("Content-Type", contentType)
+
+	in := rc.Params{
+		"_request": httpReq,
+		"fs":       r.FremoteName,
+		"remote":   "",
+	}
+
+	_, err = call.Fn(context.Background(), in)
+	require.NoError(t, err)
+
+	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{testItem1}, nil, fs.ModTimeNotSupported)
+
+	assert.NoError(t, r.Fremote.Mkdir(context.Background(), "subdir"))
+
+	currentFile2, err := os.Open(path.Join(r.LocalName, testFileName))
+	require.NoError(t, err)
+
+	defer func() {
+		assert.NoError(t, currentFile2.Close())
+	}()
+
+	formReader, contentType, _, err = rest.MultipartUpload(ctx, currentFile2, url.Values{}, "file", testFileName)
+	require.NoError(t, err)
+
+	httpReq = httptest.NewRequest("POST", "/", formReader)
+	httpReq.Header.Add("Content-Type", contentType)
+
+	in = rc.Params{
+		"_request": httpReq,
+		"fs":       r.FremoteName,
+		"remote":   "subdir",
+	}
+
+	_, err = call.Fn(context.Background(), in)
+	require.NoError(t, err)
+
+	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{testItem1, testItem2}, nil, fs.ModTimeNotSupported)
+
+}
+
+// operations/command: Runs a backend command
+func TestRcCommand(t *testing.T) {
+	r, call := rcNewRun(t, "backend/command")
+	in := rc.Params{
+		"fs":      r.FremoteName,
+		"command": "noop",
+		"opt": map[string]string{
+			"echo": "true",
+			"blue": "",
+		},
+		"arg": []string{
+			"path1",
+			"path2",
+		},
+	}
+	got, err := call.Fn(context.Background(), in)
+	if err != nil {
+		assert.False(t, r.Fremote.Features().IsLocal, "mustn't fail on local remote")
+		assert.Contains(t, err.Error(), "command not found")
+		return
+	}
+	want := rc.Params{"result": map[string]interface{}{
+		"arg": []string{
+			"path1",
+			"path2",
+		},
+		"name": "noop",
+		"opt": map[string]string{
+			"blue": "",
+			"echo": "true",
+		},
+	}}
+	assert.Equal(t, want, got)
+	errTxt := "explosion in the sausage factory"
+	in["opt"].(map[string]string)["error"] = errTxt
+	_, err = call.Fn(context.Background(), in)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), errTxt)
+}
+
+// operations/command: Runs a backend command
+func TestRcDu(t *testing.T) {
+	ctx := context.Background()
+	_, call := rcNewRun(t, "core/du")
+	in := rc.Params{}
+	out, err := call.Fn(ctx, in)
+	if err == diskusage.ErrUnsupported {
+		t.Skip(err)
+	}
+	assert.NotEqual(t, "", out["dir"])
+	info := out["info"].(diskusage.Info)
+	assert.True(t, info.Total != 0)
+	assert.True(t, info.Total > info.Free)
+	assert.True(t, info.Total > info.Available)
+	assert.True(t, info.Free >= info.Available)
 }

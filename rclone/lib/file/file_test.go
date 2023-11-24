@@ -3,28 +3,19 @@ package file
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// Create a test directory then tidy up
-func testDir(t *testing.T) (string, func()) {
-	dir, err := ioutil.TempDir("", "rclone-test")
-	require.NoError(t, err)
-	return dir, func() {
-		assert.NoError(t, os.RemoveAll(dir))
-	}
-}
-
 // This lists dir and checks the listing is as expected without checking the size
 func checkListingNoSize(t *testing.T, dir string, want []string) {
 	var got []string
-	nodes, err := ioutil.ReadDir(dir)
+	nodes, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	for _, node := range nodes {
 		got = append(got, fmt.Sprintf("%s,%v", node.Name(), node.IsDir()))
@@ -35,18 +26,19 @@ func checkListingNoSize(t *testing.T, dir string, want []string) {
 // This lists dir and checks the listing is as expected
 func checkListing(t *testing.T, dir string, want []string) {
 	var got []string
-	nodes, err := ioutil.ReadDir(dir)
+	nodes, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	for _, node := range nodes {
-		got = append(got, fmt.Sprintf("%s,%d,%v", node.Name(), node.Size(), node.IsDir()))
+		info, err := node.Info()
+		assert.NoError(t, err)
+		got = append(got, fmt.Sprintf("%s,%d,%v", node.Name(), info.Size(), node.IsDir()))
 	}
 	assert.Equal(t, want, got)
 }
 
 // Test we can rename an open file
 func TestOpenFileRename(t *testing.T) {
-	dir, tidy := testDir(t)
-	defer tidy()
+	dir := t.TempDir()
 
 	filepath := path.Join(dir, "file1")
 	f, err := Create(filepath)
@@ -70,8 +62,7 @@ func TestOpenFileRename(t *testing.T) {
 
 // Test we can delete an open file
 func TestOpenFileDelete(t *testing.T) {
-	dir, tidy := testDir(t)
-	defer tidy()
+	dir := t.TempDir()
 
 	filepath := path.Join(dir, "file1")
 	f, err := Create(filepath)
@@ -102,8 +93,7 @@ func TestOpenFileDelete(t *testing.T) {
 
 // Smoke test the Open, OpenFile and Create functions
 func TestOpenFileOperations(t *testing.T) {
-	dir, tidy := testDir(t)
-	defer tidy()
+	dir := t.TempDir()
 
 	filepath := path.Join(dir, "file1")
 
@@ -151,4 +141,30 @@ func TestOpenFileOperations(t *testing.T) {
 		"file1,7,false",
 	})
 
+}
+
+// Smoke test the IsReserved function
+func TestIsReserved(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Skipping test on !windows")
+	}
+	// Regular name
+	require.NoError(t, IsReserved("readme.txt"))
+	require.NoError(t, IsReserved("some/path/readme.txt"))
+	// Empty
+	require.Error(t, IsReserved(""))
+	// Separators only
+	require.Error(t, IsReserved("/"))
+	require.Error(t, IsReserved("////"))
+	require.Error(t, IsReserved("./././././"))
+	// Legacy device name
+	require.Error(t, IsReserved("NUL"))
+	require.Error(t, IsReserved("nul"))
+	require.Error(t, IsReserved("Nul"))
+	require.Error(t, IsReserved("NUL.txt"))
+	require.Error(t, IsReserved("some/path/to/nul.txt"))
+	require.NoError(t, IsReserved("NULL"))
+	// Name end with a space or a period
+	require.Error(t, IsReserved("test."))
+	require.Error(t, IsReserved("test "))
 }

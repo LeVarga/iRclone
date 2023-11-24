@@ -2,11 +2,12 @@ package fichier
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/lib/rest"
@@ -72,6 +73,10 @@ func (o *Object) SetModTime(context.Context, time.Time) error {
 	//return errors.New("setting modtime is not supported for 1fichier remotes")
 }
 
+func (o *Object) setMetaData(file File) {
+	o.file = file
+}
+
 // Open opens the file for read.  Call Close() on the returned io.ReadCloser
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadCloser, error) {
 	fs.FixRangeOption(options, o.file.Size)
@@ -90,7 +95,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 
 	err = o.fs.pacer.Call(func() (bool, error) {
 		resp, err = o.fs.rest.Call(ctx, &opts)
-		return shouldRetry(resp, err)
+		return shouldRetry(ctx, resp, err)
 	})
 
 	if err != nil {
@@ -101,7 +106,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 
 // Update in to the object with the modTime given of the given size
 //
-// When called from outside a Fs by rclone, src.Size() will always be >= 0.
+// When called from outside an Fs by rclone, src.Size() will always be >= 0.
 // But for unknown-sized objects (indicated by src.Size() == -1), Upload should either
 // return an error or update the object properly (rather than e.g. calling panic).
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
@@ -118,7 +123,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	// Delete duplicate after successful upload
 	err = o.Remove(ctx)
 	if err != nil {
-		return errors.Wrap(err, "failed to remove old version")
+		return fmt.Errorf("failed to remove old version: %w", err)
 	}
 
 	// Replace guts of old object with new one

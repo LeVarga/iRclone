@@ -1,4 +1,4 @@
-// Package b2 provides an interface to the Backblaze B2 object storage system
+// Package b2 provides an interface to the Backblaze B2 object storage system.
 package b2
 
 // FIXME should we remove sha1 checks from here as rclone now supports
@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	gohash "hash"
 	"io"
@@ -19,23 +20,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/backend/b2/api"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/accounting"
+	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
-	"github.com/rclone/rclone/fs/encodings"
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/fs/walk"
 	"github.com/rclone/rclone/lib/bucket"
+	"github.com/rclone/rclone/lib/encoder"
+	"github.com/rclone/rclone/lib/multipart"
 	"github.com/rclone/rclone/lib/pacer"
+	"github.com/rclone/rclone/lib/pool"
 	"github.com/rclone/rclone/lib/rest"
 )
-
-const enc = encodings.B2
 
 const (
 	defaultEndpoint     = "https://api.backblazeb2.com"
@@ -44,22 +45,26 @@ const (
 	timeHeader          = headerPrefix + timeKey
 	sha1Key             = "large_file_sha1"
 	sha1Header          = "X-Bz-Content-Sha1"
-	sha1InfoHeader      = headerPrefix + sha1Key
 	testModeHeader      = "X-Bz-Test-Mode"
+	idHeader            = "X-Bz-File-Id"
+	nameHeader          = "X-Bz-File-Name"
+	timestampHeader     = "X-Bz-Upload-Timestamp"
 	retryAfterHeader    = "Retry-After"
 	minSleep            = 10 * time.Millisecond
 	maxSleep            = 5 * time.Minute
 	decayConstant       = 1 // bigger for slower decay, exponential
 	maxParts            = 10000
 	maxVersions         = 100 // maximum number of versions we search in --b2-versions mode
-	minChunkSize        = 5 * fs.MebiByte
-	defaultChunkSize    = 96 * fs.MebiByte
-	defaultUploadCutoff = 200 * fs.MebiByte
+	minChunkSize        = 5 * fs.Mebi
+	defaultChunkSize    = 96 * fs.Mebi
+	defaultUploadCutoff = 200 * fs.Mebi
+	largeFileCopyCutoff = 4 * fs.Gibi // 5E9 is the max
 )
 
 // Globals
 var (
-	errNotWithVersions = errors.New("can't modify or delete files in --b2-versions mode")
+	errNotWithVersions  = errors.New("can't modify or delete files in --b2-versions mode")
+	errNotWithVersionAt = errors.New("can't modify or delete files in --b2-version-at mode")
 )
 
 // Register with Fs
@@ -69,16 +74,18 @@ func init() {
 		Description: "Backblaze B2",
 		NewFs:       NewFs,
 		Options: []fs.Option{{
-			Name:     "account",
-			Help:     "Account ID or Application Key ID",
-			Required: true,
+			Name:      "account",
+			Help:      "Account ID or Application Key ID.",
+			Required:  true,
+			Sensitive: true,
 		}, {
-			Name:     "key",
-			Help:     "Application Key",
-			Required: true,
+			Name:      "key",
+			Help:      "Application Key.",
+			Required:  true,
+			Sensitive: true,
 		}, {
 			Name:     "endpoint",
-			Help:     "Endpoint for the service.\nLeave blank normally.",
+			Help:     "Endpoint for the service.\n\nLeave blank normally.",
 			Advanced: true,
 		}, {
 			Name: "test_mode",
@@ -98,8 +105,13 @@ in the [b2 integrations checklist](https://www.backblaze.com/b2/docs/integration
 			Advanced: true,
 		}, {
 			Name:     "versions",
-			Help:     "Include old versions in directory listings.\nNote that when using this no file write operations are permitted,\nso you can't upload files or delete them.",
+			Help:     "Include old versions in directory listings.\n\nNote that when using this no file write operations are permitted,\nso you can't upload files or delete them.",
 			Default:  false,
+			Advanced: true,
+		}, {
+			Name:     "version_at",
+			Help:     "Show file versions as they were at the specified time.\n\nNote that when using this no file write operations are permitted,\nso you can't upload files or delete them.",
+			Default:  fs.Time{},
 			Advanced: true,
 		}, {
 			Name:    "hard_delete",
@@ -111,22 +123,51 @@ in the [b2 integrations checklist](https://www.backblaze.com/b2/docs/integration
 
 Files above this size will be uploaded in chunks of "--b2-chunk-size".
 
-This value should be set no larger than 4.657GiB (== 5GB).`,
+This value should be set no larger than 4.657 GiB (== 5 GB).`,
 			Default:  defaultUploadCutoff,
 			Advanced: true,
 		}, {
-			Name: "chunk_size",
-			Help: `Upload chunk size. Must fit in memory.
+			Name: "copy_cutoff",
+			Help: `Cutoff for switching to multipart copy.
 
-When uploading large files, chunk the file into this size.  Note that
-these chunks are buffered in memory and there might a maximum of
-"--transfers" chunks in progress at once.  5,000,000 Bytes is the
-minimum size.`,
+Any files larger than this that need to be server-side copied will be
+copied in chunks of this size.
+
+The minimum is 0 and the maximum is 4.6 GiB.`,
+			Default:  largeFileCopyCutoff,
+			Advanced: true,
+		}, {
+			Name: "chunk_size",
+			Help: `Upload chunk size.
+
+When uploading large files, chunk the file into this size.
+
+Must fit in memory. These chunks are buffered in memory and there
+might a maximum of "--transfers" chunks in progress at once.
+
+5,000,000 Bytes is the minimum size.`,
 			Default:  defaultChunkSize,
 			Advanced: true,
 		}, {
-			Name:     "disable_checksum",
-			Help:     `Disable checksums for large (> upload cutoff) files`,
+			Name: "upload_concurrency",
+			Help: `Concurrency for multipart uploads.
+
+This is the number of chunks of the same file that are uploaded
+concurrently.
+
+Note that chunks are stored in memory and there may be up to
+"--transfers" * "--b2-upload-concurrency" chunks stored at once
+in memory.`,
+			Default:  4,
+			Advanced: true,
+		}, {
+			Name: "disable_checksum",
+			Help: `Disable checksums for large (> upload cutoff) files.
+
+Normally rclone will calculate the SHA1 checksum of the input before
+uploading it so it can add it to metadata on the object. This is great
+for data integrity checking but can cause long delays for large files
+to start uploading.`,
 			Default:  false,
 			Advanced: true,
 		}, {
@@ -135,8 +176,18 @@ minimum size.`,
 
 This is usually set to a Cloudflare CDN URL as Backblaze offers
 free egress for data downloaded through the Cloudflare network.
-This is probably only useful for a public bucket.
-Leave blank if you want to use the endpoint provided by Backblaze.`,
+Rclone works with private buckets by sending an "Authorization" header.
+If the custom endpoint rewrites the requests for authentication,
+e.g., in Cloudflare Workers, this header needs to be handled properly.
+Leave blank if you want to use the endpoint provided by Backblaze.
+
+The URL provided here SHOULD have the protocol and SHOULD NOT have
+a trailing slash or specify the /file/bucket subpath as rclone will
+request files with "{download_url}/file/{bucket_name}/{path}".
+
+Example:
+> https://mysubdomain.mydomain.tld
+(No trailing "/", "file" or "bucket")`,
 			Advanced: true,
 		}, {
 			Name: "download_auth_duration",
@@ -146,23 +197,49 @@ The duration before the download authorization token will expire.
 The minimum value is 1 second. The maximum value is one week.`,
 			Default:  fs.Duration(7 * 24 * time.Hour),
 			Advanced: true,
+		}, {
+			Name:     "memory_pool_flush_time",
+			Default:  fs.Duration(time.Minute),
+			Advanced: true,
+			Hide:     fs.OptionHideBoth,
+			Help:     `How often internal memory buffer pools will be flushed. (no longer used)`,
+		}, {
+			Name:     "memory_pool_use_mmap",
+			Default:  false,
+			Advanced: true,
+			Hide:     fs.OptionHideBoth,
+			Help:     `Whether to use mmap buffers in internal memory pool. (no longer used)`,
+		}, {
+			Name:     config.ConfigEncoding,
+			Help:     config.ConfigEncodingHelp,
+			Advanced: true,
+			// See: https://www.backblaze.com/b2/docs/files.html
+			// Encode invalid UTF-8 bytes as json doesn't handle them properly.
+			// FIXME: allow /, but not leading, trailing or double
+			Default: (encoder.Display |
+				encoder.EncodeBackSlash |
+				encoder.EncodeInvalidUtf8),
 		}},
 	})
 }
 
 // Options defines the configuration for this backend
 type Options struct {
-	Account                       string        `config:"account"`
-	Key                           string        `config:"key"`
-	Endpoint                      string        `config:"endpoint"`
-	TestMode                      string        `config:"test_mode"`
-	Versions                      bool          `config:"versions"`
-	HardDelete                    bool          `config:"hard_delete"`
-	UploadCutoff                  fs.SizeSuffix `config:"upload_cutoff"`
-	ChunkSize                     fs.SizeSuffix `config:"chunk_size"`
-	DisableCheckSum               bool          `config:"disable_checksum"`
-	DownloadURL                   string        `config:"download_url"`
-	DownloadAuthorizationDuration fs.Duration   `config:"download_auth_duration"`
+	Account                       string               `config:"account"`
+	Key                           string               `config:"key"`
+	Endpoint                      string               `config:"endpoint"`
+	TestMode                      string               `config:"test_mode"`
+	Versions                      bool                 `config:"versions"`
+	VersionAt                     fs.Time              `config:"version_at"`
+	HardDelete                    bool                 `config:"hard_delete"`
+	UploadCutoff                  fs.SizeSuffix        `config:"upload_cutoff"`
+	CopyCutoff                    fs.SizeSuffix        `config:"copy_cutoff"`
+	ChunkSize                     fs.SizeSuffix        `config:"chunk_size"`
+	UploadConcurrency             int                  `config:"upload_concurrency"`
+	DisableCheckSum               bool                 `config:"disable_checksum"`
+	DownloadURL                   string               `config:"download_url"`
+	DownloadAuthorizationDuration fs.Duration          `config:"download_auth_duration"`
+	Enc                           encoder.MultiEncoder `config:"encoding"`
 }
 
 // Fs represents a remote b2 server
@@ -170,6 +247,7 @@ type Fs struct {
 	name            string                                 // name of this remote
 	root            string                                 // the path we are working on if any
 	opt             Options                                // parsed config options
+	ci              *fs.ConfigInfo                         // global config
 	features        *fs.Features                           // optional features
 	srv             *rest.Client                           // the connection to the b2 server
 	rootBucket      string                                 // bucket part of root (if any)
@@ -184,7 +262,7 @@ type Fs struct {
 	uploads         map[string][]*api.GetUploadURLResponse // Upload URLs by buckedID
 	authMu          sync.Mutex                             // lock for authorizing the account
 	pacer           *fs.Pacer                              // To pace and retry the API calls
-	bufferTokens    chan []byte                            // control concurrency of multipart uploads
+	uploadToken     *pacer.TokenDispenser                  // control concurrency
 }
 
 // Object describes a b2 object
@@ -213,7 +291,7 @@ func (f *Fs) Root() string {
 // String converts this Fs to a string
 func (f *Fs) String() string {
 	if f.rootBucket == "" {
-		return fmt.Sprintf("B2 root")
+		return "B2 root"
 	}
 	if f.rootDirectory == "" {
 		return fmt.Sprintf("B2 bucket %s", f.rootBucket)
@@ -245,7 +323,7 @@ func (o *Object) split() (bucket, bucketPath string) {
 
 // retryErrorCodes is a slice of error codes that we will retry
 var retryErrorCodes = []int{
-	401, // Unauthorized (eg "Token has expired")
+	401, // Unauthorized (e.g. "Token has expired")
 	408, // Request Timeout
 	429, // Rate exceeded.
 	500, // Get occasional 500 Internal Server Error
@@ -255,7 +333,10 @@ var retryErrorCodes = []int{
 
 // shouldRetryNoAuth returns a boolean as to whether this resp and err
 // deserve to be retried.  It returns the err as a convenience
-func (f *Fs) shouldRetryNoReauth(resp *http.Response, err error) (bool, error) {
+func (f *Fs) shouldRetryNoReauth(ctx context.Context, resp *http.Response, err error) (bool, error) {
+	if fserrors.ContextError(ctx, &err) {
+		return false, err
+	}
 	// For 429 or 503 errors look at the Retry-After: header and
 	// set the retry appropriately, starting with a minimum of 1
 	// second if it isn't set.
@@ -286,7 +367,7 @@ func (f *Fs) shouldRetry(ctx context.Context, resp *http.Response, err error) (b
 		}
 		return true, err
 	}
-	return f.shouldRetryNoReauth(resp, err)
+	return f.shouldRetryNoReauth(ctx, resp, err)
 }
 
 // errorHandler parses a non 2xx error response into an error
@@ -311,7 +392,7 @@ func errorHandler(resp *http.Response) error {
 
 func checkUploadChunkSize(cs fs.SizeSuffix) error {
 	if cs < minChunkSize {
-		return errors.Errorf("%s is less than %s", cs, minChunkSize)
+		return fmt.Errorf("%s is less than %s", cs, minChunkSize)
 	}
 	return nil
 }
@@ -320,14 +401,13 @@ func (f *Fs) setUploadChunkSize(cs fs.SizeSuffix) (old fs.SizeSuffix, err error)
 	err = checkUploadChunkSize(cs)
 	if err == nil {
 		old, f.opt.ChunkSize = f.opt.ChunkSize, cs
-		f.fillBufferTokens() // reset the buffer tokens
 	}
 	return
 }
 
 func checkUploadCutoff(opt *Options, cs fs.SizeSuffix) error {
 	if cs < opt.ChunkSize {
-		return errors.Errorf("%v is less than chunk size %v", cs, opt.ChunkSize)
+		return fmt.Errorf("%v is less than chunk size %v", cs, opt.ChunkSize)
 	}
 	return nil
 }
@@ -347,21 +427,24 @@ func (f *Fs) setRoot(root string) {
 }
 
 // NewFs constructs an Fs from the path, bucket:path
-func NewFs(name, root string, m configmap.Mapper) (fs.Fs, error) {
-	ctx := context.Background()
+func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, error) {
 	// Parse config into Options struct
 	opt := new(Options)
 	err := configstruct.Set(m, opt)
 	if err != nil {
 		return nil, err
 	}
+	if opt.UploadCutoff < opt.ChunkSize {
+		opt.UploadCutoff = opt.ChunkSize
+		fs.Infof(nil, "b2: raising upload cutoff to chunk size: %v", opt.UploadCutoff)
+	}
 	err = checkUploadCutoff(opt, opt.UploadCutoff)
 	if err != nil {
-		return nil, errors.Wrap(err, "b2: upload cutoff")
+		return nil, fmt.Errorf("b2: upload cutoff: %w", err)
 	}
 	err = checkUploadChunkSize(opt.ChunkSize)
 	if err != nil {
-		return nil, errors.Wrap(err, "b2: chunk size")
+		return nil, fmt.Errorf("b2: chunk size: %w", err)
 	}
 	if opt.Account == "" {
 		return nil, errors.New("account not found")
@@ -372,15 +455,18 @@ func NewFs(name, root string, m configmap.Mapper) (fs.Fs, error) {
 	if opt.Endpoint == "" {
 		opt.Endpoint = defaultEndpoint
 	}
+	ci := fs.GetConfig(ctx)
 	f := &Fs{
 		name:        name,
 		opt:         *opt,
-		srv:         rest.NewClient(fshttp.NewClient(fs.Config)).SetErrorHandler(errorHandler),
+		ci:          ci,
+		srv:         rest.NewClient(fshttp.NewClient(ctx)).SetErrorHandler(errorHandler),
 		cache:       bucket.NewCache(),
 		_bucketID:   make(map[string]string, 1),
 		_bucketType: make(map[string]string, 1),
 		uploads:     make(map[string][]*api.GetUploadURLResponse),
-		pacer:       fs.NewPacer(pacer.NewDefault(pacer.MinSleep(minSleep), pacer.MaxSleep(maxSleep), pacer.DecayConstant(decayConstant))),
+		pacer:       fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(minSleep), pacer.MaxSleep(maxSleep), pacer.DecayConstant(decayConstant))),
+		uploadToken: pacer.NewTokenDispenser(ci.Transfers),
 	}
 	f.setRoot(root)
 	f.features = (&fs.Features{
@@ -388,26 +474,25 @@ func NewFs(name, root string, m configmap.Mapper) (fs.Fs, error) {
 		WriteMimeType:     true,
 		BucketBased:       true,
 		BucketBasedRootOK: true,
-	}).Fill(f)
+	}).Fill(ctx, f)
 	// Set the test flag if required
 	if opt.TestMode != "" {
 		testMode := strings.TrimSpace(opt.TestMode)
 		f.srv.SetHeader(testModeHeader, testMode)
 		fs.Debugf(f, "Setting test header \"%s: %s\"", testModeHeader, testMode)
 	}
-	f.fillBufferTokens()
 	err = f.authorizeAccount(ctx)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to authorize account")
+		return nil, fmt.Errorf("failed to authorize account: %w", err)
 	}
 	// If this is a key limited to a single bucket, it must exist already
 	if f.rootBucket != "" && f.info.Allowed.BucketID != "" {
-		allowedBucket := enc.ToStandardName(f.info.Allowed.BucketName)
+		allowedBucket := f.opt.Enc.ToStandardName(f.info.Allowed.BucketName)
 		if allowedBucket == "" {
 			return nil, errors.New("bucket that application key is restricted to no longer exists")
 		}
 		if allowedBucket != f.rootBucket {
-			return nil, errors.Errorf("you must use bucket %q with this application key", allowedBucket)
+			return nil, fmt.Errorf("you must use bucket %q with this application key", allowedBucket)
 		}
 		f.cache.MarkOK(f.rootBucket)
 		f.setBucketID(f.rootBucket, f.info.Allowed.BucketID)
@@ -419,12 +504,9 @@ func NewFs(name, root string, m configmap.Mapper) (fs.Fs, error) {
 		f.setRoot(newRoot)
 		_, err := f.NewObject(ctx, leaf)
 		if err != nil {
-			if err == fs.ErrorObjectNotFound {
-				// File doesn't exist so return old f
-				f.setRoot(oldRoot)
-				return f, nil
-			}
-			return nil, err
+			// File doesn't exist so return old f
+			f.setRoot(oldRoot)
+			return f, nil
 		}
 		// return an error with an fs which points to the parent
 		return f, fs.ErrorIsFile
@@ -447,10 +529,10 @@ func (f *Fs) authorizeAccount(ctx context.Context) error {
 	}
 	err := f.pacer.Call(func() (bool, error) {
 		resp, err := f.srv.CallJSON(ctx, &opts, nil, &f.info)
-		return f.shouldRetryNoReauth(resp, err)
+		return f.shouldRetryNoReauth(ctx, resp, err)
 	})
 	if err != nil {
-		return errors.Wrap(err, "failed to authenticate")
+		return fmt.Errorf("failed to authenticate: %w", err)
 	}
 	f.srv.SetRoot(f.info.APIURL+"/b2api/v1").SetHeader("Authorization", f.info.AuthorizationToken)
 	return nil
@@ -496,7 +578,7 @@ func (f *Fs) getUploadURL(ctx context.Context, bucket string) (upload *api.GetUp
 		return f.shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to get upload URL")
+		return nil, fmt.Errorf("failed to get upload URL: %w", err)
 	}
 	return upload, nil
 }
@@ -518,32 +600,26 @@ func (f *Fs) clearUploadURL(bucketID string) {
 	f.uploadMu.Unlock()
 }
 
-// Fill up (or reset) the buffer tokens
-func (f *Fs) fillBufferTokens() {
-	f.bufferTokens = make(chan []byte, fs.Config.Transfers)
-	for i := 0; i < fs.Config.Transfers; i++ {
-		f.bufferTokens <- nil
+// getRW gets a RW buffer and an upload token
+//
+// If noBuf is set then it just gets an upload token
+func (f *Fs) getRW(noBuf bool) (rw *pool.RW) {
+	f.uploadToken.Get()
+	if !noBuf {
+		rw = multipart.NewRW()
 	}
+	return rw
 }
 
-// getUploadBlock gets a block from the pool of size chunkSize
-func (f *Fs) getUploadBlock() []byte {
-	buf := <-f.bufferTokens
-	if buf == nil {
-		buf = make([]byte, f.opt.ChunkSize)
+// putRW returns a RW buffer to the memory pool and returns an upload
+// token
+//
+// If buf is nil then it just returns the upload token
+func (f *Fs) putRW(rw *pool.RW) {
+	if rw != nil {
+		_ = rw.Close()
 	}
-	// fs.Debugf(f, "Getting upload block %p", buf)
-	return buf
-}
-
-// putUploadBlock returns a block to the pool of size chunkSize
-func (f *Fs) putUploadBlock(buf []byte) {
-	buf = buf[:cap(buf)]
-	if len(buf) != int(f.opt.ChunkSize) {
-		panic("bad blocksize returned to pool")
-	}
-	// fs.Debugf(f, "Returning upload block %p", buf)
-	f.bufferTokens <- buf
+	f.uploadToken.Put()
 }
 
 // Return an Object from a path
@@ -586,15 +662,15 @@ var errEndList = errors.New("end list")
 //
 // (bucket, directory) is the starting directory
 //
-// If prefix is set then it is removed from all file names
+// If prefix is set then it is removed from all file names.
 //
 // If addBucket is set then it adds the bucket to the start of the
-// remotes generated
+// remotes generated.
 //
-// If recurse is set the function will recursively list
+// If recurse is set the function will recursively list.
 //
 // If limit is > 0 then it limits to that many files (must be less
-// than 1000)
+// than 1000).
 //
 // If hidden is set then it will list the hidden (deleted) files too.
 //
@@ -623,19 +699,22 @@ func (f *Fs) list(ctx context.Context, bucket, directory, prefix string, addBuck
 	var request = api.ListFileNamesRequest{
 		BucketID:     bucketID,
 		MaxFileCount: chunkSize,
-		Prefix:       enc.FromStandardPath(directory),
+		Prefix:       f.opt.Enc.FromStandardPath(directory),
 		Delimiter:    delimiter,
 	}
 	if directory != "" {
-		request.StartFileName = enc.FromStandardPath(directory)
+		request.StartFileName = f.opt.Enc.FromStandardPath(directory)
 	}
 	opts := rest.Opts{
 		Method: "POST",
 		Path:   "/b2_list_file_names",
 	}
-	if hidden {
+	if hidden || f.opt.VersionAt.IsSet() {
 		opts.Path = "/b2_list_file_versions"
 	}
+
+	lastFileName := ""
+
 	for {
 		var response api.ListFileNamesResponse
 		err := f.pacer.Call(func() (bool, error) {
@@ -647,7 +726,7 @@ func (f *Fs) list(ctx context.Context, bucket, directory, prefix string, addBuck
 		}
 		for i := range response.Files {
 			file := &response.Files[i]
-			file.Name = enc.ToStandardPath(file.Name)
+			file.Name = f.opt.Enc.ToStandardPath(file.Name)
 			// Finish if file name no longer has prefix
 			if prefix != "" && !strings.HasPrefix(file.Name, prefix) {
 				return nil
@@ -658,14 +737,28 @@ func (f *Fs) list(ctx context.Context, bucket, directory, prefix string, addBuck
 			}
 			remote := file.Name[len(prefix):]
 			// Check for directory
-			isDirectory := strings.HasSuffix(remote, "/")
-			if isDirectory {
+			isDirectory := remote == "" || strings.HasSuffix(remote, "/")
+			if isDirectory && len(remote) > 1 {
 				remote = remote[:len(remote)-1]
 			}
 			if addBucket {
 				remote = path.Join(bucket, remote)
 			}
+
+			if f.opt.VersionAt.IsSet() {
+				if time.Time(file.UploadTimestamp).After(time.Time(f.opt.VersionAt)) {
+					// Ignore versions that were created after the specified time
+					continue
+				}
+
+				if file.Name == lastFileName {
+					// Ignore versions before the already returned version
+					continue
+				}
+			}
+
 			// Send object
+			lastFileName = file.Name
 			err = fn(remote, file, isDirectory)
 			if err != nil {
 				if err == errEndList {
@@ -848,7 +941,7 @@ func (f *Fs) listBucketsToFn(ctx context.Context, fn listBucketFn) error {
 	f._bucketType = make(map[string]string, 1)
 	for i := range response.Buckets {
 		bucket := &response.Buckets[i]
-		bucket.Name = enc.ToStandardName(bucket.Name)
+		bucket.Name = f.opt.Enc.ToStandardName(bucket.Name)
 		f.cache.MarkOK(bucket.Name)
 		f._bucketID[bucket.Name] = bucket.ID
 		f._bucketType[bucket.Name] = bucket.Type
@@ -938,7 +1031,7 @@ func (f *Fs) clearBucketID(bucket string) {
 
 // Put the object into the bucket
 //
-// Copy the reader in to the new object which is returned
+// Copy the reader in to the new object which is returned.
 //
 // The new object may have been created if an error is returned
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
@@ -970,7 +1063,7 @@ func (f *Fs) makeBucket(ctx context.Context, bucket string) error {
 		}
 		var request = api.CreateBucketRequest{
 			AccountID: f.info.AccountID,
-			Name:      enc.FromStandardName(bucket),
+			Name:      f.opt.Enc.FromStandardName(bucket),
 			Type:      "allPrivate",
 		}
 		var response api.Bucket
@@ -993,7 +1086,7 @@ func (f *Fs) makeBucket(ctx context.Context, bucket string) error {
 					}
 				}
 			}
-			return errors.Wrap(err, "failed to create bucket")
+			return fmt.Errorf("failed to create bucket: %w", err)
 		}
 		f.setBucketID(bucket, response.ID)
 		f.setBucketType(bucket, response.Type)
@@ -1028,7 +1121,7 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 			return f.shouldRetry(ctx, resp, err)
 		})
 		if err != nil {
-			return errors.Wrap(err, "failed to delete bucket")
+			return fmt.Errorf("failed to delete bucket: %w", err)
 		}
 		f.clearBucketID(bucket)
 		f.clearBucketType(bucket)
@@ -1054,7 +1147,7 @@ func (f *Fs) hide(ctx context.Context, bucket, bucketPath string) error {
 	}
 	var request = api.HideFileRequest{
 		BucketID: bucketID,
-		Name:     enc.FromStandardPath(bucketPath),
+		Name:     f.opt.Enc.FromStandardPath(bucketPath),
 	}
 	var response api.File
 	err = f.pacer.Call(func() (bool, error) {
@@ -1069,7 +1162,7 @@ func (f *Fs) hide(ctx context.Context, bucket, bucketPath string) error {
 				return nil
 			}
 		}
-		return errors.Wrapf(err, "failed to hide %q", bucketPath)
+		return fmt.Errorf("failed to hide %q: %w", bucketPath, err)
 	}
 	return nil
 }
@@ -1082,7 +1175,7 @@ func (f *Fs) deleteByID(ctx context.Context, ID, Name string) error {
 	}
 	var request = api.DeleteFileRequest{
 		ID:   ID,
-		Name: enc.FromStandardPath(Name),
+		Name: f.opt.Enc.FromStandardPath(Name),
 	}
 	var response api.File
 	err := f.pacer.Call(func() (bool, error) {
@@ -1090,7 +1183,7 @@ func (f *Fs) deleteByID(ctx context.Context, ID, Name string) error {
 		return f.shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
-		return errors.Wrapf(err, "failed to delete %q", Name)
+		return fmt.Errorf("failed to delete %q: %w", Name, err)
 	}
 	return nil
 }
@@ -1100,7 +1193,8 @@ func (f *Fs) deleteByID(ctx context.Context, ID, Name string) error {
 // if oldOnly is true then it deletes only non current files.
 //
 // Implemented here so we can make sure we delete old versions.
-func (f *Fs) purge(ctx context.Context, bucket, directory string, oldOnly bool) error {
+func (f *Fs) purge(ctx context.Context, dir string, oldOnly bool) error {
+	bucket, directory := f.split(dir)
 	if bucket == "" {
 		return errors.New("can't purge from root")
 	}
@@ -1117,17 +1211,14 @@ func (f *Fs) purge(ctx context.Context, bucket, directory string, oldOnly bool) 
 		}
 	}
 	var isUnfinishedUploadStale = func(timestamp api.Timestamp) bool {
-		if time.Since(time.Time(timestamp)).Hours() > 24 {
-			return true
-		}
-		return false
+		return time.Since(time.Time(timestamp)).Hours() > 24
 	}
 
 	// Delete Config.Transfers in parallel
-	toBeDeleted := make(chan *api.File, fs.Config.Transfers)
+	toBeDeleted := make(chan *api.File, f.ci.Transfers)
 	var wg sync.WaitGroup
-	wg.Add(fs.Config.Transfers)
-	for i := 0; i < fs.Config.Transfers; i++ {
+	wg.Add(f.ci.Transfers)
+	for i := 0; i < f.ci.Transfers; i++ {
 		go func() {
 			defer wg.Done()
 			for object := range toBeDeleted {
@@ -1136,10 +1227,10 @@ func (f *Fs) purge(ctx context.Context, bucket, directory string, oldOnly bool) 
 					fs.Errorf(object.Name, "Can't create object %v", err)
 					continue
 				}
-				tr := accounting.Stats(ctx).NewCheckingTransfer(oi)
+				tr := accounting.Stats(ctx).NewCheckingTransfer(oi, "deleting")
 				err = f.deleteByID(ctx, object.ID, object.Name)
 				checkErr(err)
-				tr.Done(err)
+				tr.Done(ctx, err)
 			}
 		}()
 	}
@@ -1150,7 +1241,7 @@ func (f *Fs) purge(ctx context.Context, bucket, directory string, oldOnly bool) 
 			if err != nil {
 				fs.Errorf(object, "Can't create object %+v", err)
 			}
-			tr := accounting.Stats(ctx).NewCheckingTransfer(oi)
+			tr := accounting.Stats(ctx).NewCheckingTransfer(oi, "checking")
 			if oldOnly && last != remote {
 				// Check current version of the file
 				if object.Action == "hide" {
@@ -1167,7 +1258,7 @@ func (f *Fs) purge(ctx context.Context, bucket, directory string, oldOnly bool) 
 				toBeDeleted <- object
 			}
 			last = remote
-			tr.Done(nil)
+			tr.Done(ctx, nil)
 		}
 		return nil
 	}))
@@ -1175,54 +1266,70 @@ func (f *Fs) purge(ctx context.Context, bucket, directory string, oldOnly bool) 
 	wg.Wait()
 
 	if !oldOnly {
-		checkErr(f.Rmdir(ctx, ""))
+		checkErr(f.Rmdir(ctx, dir))
 	}
 	return errReturn
 }
 
 // Purge deletes all the files and directories including the old versions.
-func (f *Fs) Purge(ctx context.Context) error {
-	return f.purge(ctx, f.rootBucket, f.rootDirectory, false)
+func (f *Fs) Purge(ctx context.Context, dir string) error {
+	return f.purge(ctx, dir, false)
 }
 
 // CleanUp deletes all the hidden files.
 func (f *Fs) CleanUp(ctx context.Context) error {
-	return f.purge(ctx, f.rootBucket, f.rootDirectory, true)
+	return f.purge(ctx, "", true)
 }
 
-// Copy src to this remote using server side copy operations.
+// copy does a server-side copy from dstObj <- srcObj
 //
-// This is stored with the remote path given
-//
-// It returns the destination Object and a possible error
-//
-// Will only be called if src.Fs().Name() == f.Name()
-//
-// If it isn't possible then return fs.ErrorCantCopy
-func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	dstBucket, dstPath := f.split(remote)
-	err := f.makeBucket(ctx, dstBucket)
+// If newInfo is nil then the metadata will be copied otherwise it
+// will be replaced with newInfo
+func (f *Fs) copy(ctx context.Context, dstObj *Object, srcObj *Object, newInfo *api.File) (err error) {
+	if srcObj.size >= int64(f.opt.CopyCutoff) {
+		if newInfo == nil {
+			newInfo, err = srcObj.getMetaData(ctx)
+			if err != nil {
+				return err
+			}
+		}
+		up, err := f.newLargeUpload(ctx, dstObj, nil, srcObj, f.opt.CopyCutoff, true, newInfo)
+		if err != nil {
+			return err
+		}
+		err = up.Copy(ctx)
+		if err != nil {
+			return err
+		}
+		return dstObj.decodeMetaDataFileInfo(up.info)
+	}
+
+	dstBucket, dstPath := dstObj.split()
+	err = f.makeBucket(ctx, dstBucket)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	srcObj, ok := src.(*Object)
-	if !ok {
-		fs.Debugf(src, "Can't copy - not same remote type")
-		return nil, fs.ErrorCantCopy
-	}
+
 	destBucketID, err := f.getBucketID(ctx, dstBucket)
 	if err != nil {
-		return nil, err
+		return err
 	}
+
 	opts := rest.Opts{
 		Method: "POST",
 		Path:   "/b2_copy_file",
 	}
 	var request = api.CopyFileRequest{
-		SourceID:          srcObj.id,
-		Name:              enc.FromStandardPath(dstPath),
-		MetadataDirective: "COPY",
-		DestBucketID:      destBucketID,
+		SourceID:     srcObj.id,
+		Name:         f.opt.Enc.FromStandardPath(dstPath),
+		DestBucketID: destBucketID,
+	}
+	if newInfo == nil {
+		request.MetadataDirective = "COPY"
+	} else {
+		request.MetadataDirective = "REPLACE"
+		request.ContentType = newInfo.ContentType
+		request.Info = newInfo.Info
 	}
 	var response api.FileInfo
 	err = f.pacer.Call(func() (bool, error) {
@@ -1230,17 +1337,36 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 		return f.shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	o := &Object{
+	return dstObj.decodeMetaDataFileInfo(&response)
+}
+
+// Copy src to this remote using server-side copy operations.
+//
+// This is stored with the remote path given.
+//
+// It returns the destination Object and a possible error.
+//
+// Will only be called if src.Fs().Name() == f.Name()
+//
+// If it isn't possible then return fs.ErrorCantCopy
+func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	srcObj, ok := src.(*Object)
+	if !ok {
+		fs.Debugf(src, "Can't copy - not same remote type")
+		return nil, fs.ErrorCantCopy
+	}
+	// Temporary Object under construction
+	dstObj := &Object{
 		fs:     f,
 		remote: remote,
 	}
-	err = o.decodeMetaDataFileInfo(&response)
+	err := f.copy(ctx, dstObj, srcObj, nil)
 	if err != nil {
 		return nil, err
 	}
-	return o, nil
+	return dstObj, nil
 }
 
 // Hashes returns the supported hash sets.
@@ -1268,7 +1394,7 @@ func (f *Fs) getDownloadAuthorization(ctx context.Context, bucket, remote string
 	}
 	var request = api.GetDownloadAuthorizationRequest{
 		BucketID:               bucketID,
-		FileNamePrefix:         enc.FromStandardPath(path.Join(f.root, remote)),
+		FileNamePrefix:         f.opt.Enc.FromStandardPath(path.Join(f.rootDirectory, remote)),
 		ValidDurationInSeconds: validDurationInSeconds,
 	}
 	var response api.GetDownloadAuthorizationResponse
@@ -1277,13 +1403,13 @@ func (f *Fs) getDownloadAuthorization(ctx context.Context, bucket, remote string
 		return f.shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
-		return "", errors.Wrap(err, "failed to get download authorization")
+		return "", fmt.Errorf("failed to get download authorization: %w", err)
 	}
 	return response.AuthorizationToken, nil
 }
 
 // PublicLink returns a link for downloading without account
-func (f *Fs) PublicLink(ctx context.Context, remote string) (link string, err error) {
+func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, unlink bool) (link string, err error) {
 	bucket, bucketPath := f.split(remote)
 	var RootURL string
 	if f.opt.DownloadURL == "" {
@@ -1304,7 +1430,7 @@ func (f *Fs) PublicLink(ctx context.Context, remote string) (link string, err er
 	if err != nil {
 		return "", err
 	}
-	absPath := "/" + bucketPath
+	absPath := "/" + urlEncode(bucketPath)
 	link = RootURL + "/file/" + urlEncode(bucket) + absPath
 	bucketType, err := f.getbucketType(ctx, bucket)
 	if err != nil {
@@ -1360,13 +1486,25 @@ func (o *Object) Size() int64 {
 	return o.size
 }
 
+// Clean the SHA1
+//
+// Make sure it is lower case.
+//
+// Remove unverified prefix - see https://www.backblaze.com/b2/docs/uploading.html
+// Some tools (e.g. Cyberduck) use this
+func cleanSHA1(sha1 string) string {
+	const unverified = "unverified:"
+	return strings.TrimPrefix(strings.ToLower(sha1), unverified)
+}
+
 // decodeMetaDataRaw sets the metadata from the data passed in
 //
 // Sets
-//  o.id
-//  o.modTime
-//  o.size
-//  o.sha1
+//
+//	o.id
+//	o.modTime
+//	o.size
+//	o.sha1
 func (o *Object) decodeMetaDataRaw(ID, SHA1 string, Size int64, UploadTimestamp api.Timestamp, Info map[string]string, mimeType string) (err error) {
 	o.id = ID
 	o.sha1 = SHA1
@@ -1375,12 +1513,7 @@ func (o *Object) decodeMetaDataRaw(ID, SHA1 string, Size int64, UploadTimestamp 
 	if o.sha1 == "" || o.sha1 == "none" {
 		o.sha1 = Info[sha1Key]
 	}
-	// Remove unverified prefix - see https://www.backblaze.com/b2/docs/uploading.html
-	// Some tools (eg Cyberduck) use this
-	const unverified = "unverified:"
-	if strings.HasPrefix(o.sha1, unverified) {
-		o.sha1 = o.sha1[len(unverified):]
-	}
+	o.sha1 = cleanSHA1(o.sha1)
 	o.size = Size
 	// Use the UploadTimestamp if can't get file info
 	o.modTime = time.Time(UploadTimestamp)
@@ -1390,10 +1523,11 @@ func (o *Object) decodeMetaDataRaw(ID, SHA1 string, Size int64, UploadTimestamp 
 // decodeMetaData sets the metadata in the object from an api.File
 //
 // Sets
-//  o.id
-//  o.modTime
-//  o.size
-//  o.sha1
+//
+//	o.id
+//	o.modTime
+//	o.size
+//	o.sha1
 func (o *Object) decodeMetaData(info *api.File) (err error) {
 	return o.decodeMetaDataRaw(info.ID, info.SHA1, info.Size, info.UploadTimestamp, info.Info, info.ContentType)
 }
@@ -1401,16 +1535,20 @@ func (o *Object) decodeMetaData(info *api.File) (err error) {
 // decodeMetaDataFileInfo sets the metadata in the object from an api.FileInfo
 //
 // Sets
-//  o.id
-//  o.modTime
-//  o.size
-//  o.sha1
+//
+//	o.id
+//	o.modTime
+//	o.size
+//	o.sha1
 func (o *Object) decodeMetaDataFileInfo(info *api.FileInfo) (err error) {
 	return o.decodeMetaDataRaw(info.ID, info.SHA1, info.Size, info.UploadTimestamp, info.Info, info.ContentType)
 }
 
-// getMetaData gets the metadata from the object unconditionally
-func (o *Object) getMetaData(ctx context.Context) (info *api.File, err error) {
+// getMetaDataListing gets the metadata from the object unconditionally from the listing
+//
+// Note that listing is a class C transaction which costs more than
+// the B transaction used in getMetaData
+func (o *Object) getMetaDataListing(ctx context.Context) (info *api.File, err error) {
 	bucket, bucketPath := o.split()
 	maxSearched := 1
 	var timestamp api.Timestamp
@@ -1443,13 +1581,27 @@ func (o *Object) getMetaData(ctx context.Context) (info *api.File, err error) {
 	return info, nil
 }
 
+// getMetaData gets the metadata from the object unconditionally
+func (o *Object) getMetaData(ctx context.Context) (info *api.File, err error) {
+	// If using versions and have a version suffix, need to list the directory to find the correct versions
+	if o.fs.opt.Versions {
+		timestamp, _ := api.RemoveVersion(o.remote)
+		if !timestamp.IsZero() {
+			return o.getMetaDataListing(ctx)
+		}
+	}
+	_, info, err = o.getOrHead(ctx, "HEAD", nil)
+	return info, err
+}
+
 // readMetaData gets the metadata if it hasn't already been fetched
 //
 // Sets
-//  o.id
-//  o.modTime
-//  o.size
-//  o.sha1
+//
+//	o.id
+//	o.modTime
+//	o.size
+//	o.sha1
 func (o *Object) readMetaData(ctx context.Context) (err error) {
 	if o.id != "" {
 		return nil
@@ -1501,28 +1653,10 @@ func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 	if err != nil {
 		return err
 	}
-	_, bucketPath := o.split()
 	info.Info[timeKey] = timeString(modTime)
-	opts := rest.Opts{
-		Method: "POST",
-		Path:   "/b2_copy_file",
-	}
-	var request = api.CopyFileRequest{
-		SourceID:          o.id,
-		Name:              enc.FromStandardPath(bucketPath), // copy to same name
-		MetadataDirective: "REPLACE",
-		ContentType:       info.ContentType,
-		Info:              info.Info,
-	}
-	var response api.FileInfo
-	err = o.fs.pacer.Call(func() (bool, error) {
-		resp, err := o.fs.srv.CallJSON(ctx, &opts, &request, &response)
-		return o.fs.shouldRetry(ctx, resp, err)
-	})
-	if err != nil {
-		return err
-	}
-	return o.decodeMetaDataFileInfo(&response)
+
+	// Copy to the same name, overwriting the metadata only
+	return o.fs.copy(ctx, o, o, info)
 }
 
 // Storable returns if this object is storable
@@ -1574,14 +1708,14 @@ func (file *openFile) Close() (err error) {
 
 	// Check to see we read the correct number of bytes
 	if file.o.Size() != file.bytes {
-		return errors.Errorf("object corrupted on transfer - length mismatch (want %d got %d)", file.o.Size(), file.bytes)
+		return fmt.Errorf("object corrupted on transfer - length mismatch (want %d got %d)", file.o.Size(), file.bytes)
 	}
 
 	// Check the SHA1
 	receivedSHA1 := file.o.sha1
 	calculatedSHA1 := fmt.Sprintf("%x", file.hash.Sum(nil))
 	if receivedSHA1 != "" && receivedSHA1 != calculatedSHA1 {
-		return errors.Errorf("object corrupted on transfer - SHA1 mismatch (want %q got %q)", receivedSHA1, calculatedSHA1)
+		return fmt.Errorf("object corrupted on transfer - SHA1 mismatch (want %q got %q)", receivedSHA1, calculatedSHA1)
 	}
 
 	return nil
@@ -1590,12 +1724,11 @@ func (file *openFile) Close() (err error) {
 // Check it satisfies the interfaces
 var _ io.ReadCloser = &openFile{}
 
-// Open an object for read
-func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.ReadCloser, err error) {
-	fs.FixRangeOption(options, o.size)
+func (o *Object) getOrHead(ctx context.Context, method string, options []fs.OpenOption) (resp *http.Response, info *api.File, err error) {
 	opts := rest.Opts{
-		Method:  "GET",
-		Options: options,
+		Method:     method,
+		Options:    options,
+		NoResponse: method == "HEAD",
 	}
 
 	// Use downloadUrl from backblaze if downloadUrl is not set
@@ -1606,42 +1739,80 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		opts.RootURL = o.fs.opt.DownloadURL
 	}
 
-	// Download by id if set otherwise by name
-	if o.id != "" {
+	// Download by id if set and not using DownloadURL otherwise by name
+	if o.id != "" && o.fs.opt.DownloadURL == "" {
 		opts.Path += "/b2api/v1/b2_download_file_by_id?fileId=" + urlEncode(o.id)
 	} else {
 		bucket, bucketPath := o.split()
-		opts.Path += "/file/" + urlEncode(enc.FromStandardName(bucket)) + "/" + urlEncode(enc.FromStandardPath(bucketPath))
+		opts.Path += "/file/" + urlEncode(o.fs.opt.Enc.FromStandardName(bucket)) + "/" + urlEncode(o.fs.opt.Enc.FromStandardPath(bucketPath))
 	}
-	var resp *http.Response
 	err = o.fs.pacer.Call(func() (bool, error) {
 		resp, err = o.fs.srv.Call(ctx, &opts)
 		return o.fs.shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to open for download")
+		// 404 for files, 400 for directories
+		if resp != nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest) {
+			return nil, nil, fs.ErrorObjectNotFound
+		}
+		return nil, nil, fmt.Errorf("failed to %s for download: %w", method, err)
 	}
 
-	// Parse the time out of the headers if possible
-	err = o.parseTimeString(resp.Header.Get(timeHeader))
+	// NB resp may be Open here - don't return err != nil without closing
+
+	// Convert the Headers into an api.File
+	var uploadTimestamp api.Timestamp
+	err = uploadTimestamp.UnmarshalJSON([]byte(resp.Header.Get(timestampHeader)))
+	if err != nil {
+		fs.Debugf(o, "Bad "+timestampHeader+" header: %v", err)
+	}
+	var Info = make(map[string]string)
+	for k, vs := range resp.Header {
+		k = strings.ToLower(k)
+		for _, v := range vs {
+			if strings.HasPrefix(k, headerPrefix) {
+				Info[k[len(headerPrefix):]] = v
+			}
+		}
+	}
+	info = &api.File{
+		ID:              resp.Header.Get(idHeader),
+		Name:            resp.Header.Get(nameHeader),
+		Action:          "upload",
+		Size:            resp.ContentLength,
+		UploadTimestamp: uploadTimestamp,
+		SHA1:            resp.Header.Get(sha1Header),
+		ContentType:     resp.Header.Get("Content-Type"),
+		Info:            Info,
+	}
+	// When reading files from B2 via cloudflare using
+	// --b2-download-url cloudflare strips the Content-Length
+	// headers (presumably so it can inject stuff) so use the old
+	// length read from the listing.
+	if info.Size < 0 {
+		info.Size = o.size
+	}
+	return resp, info, nil
+}
+
+// Open an object for read
+func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.ReadCloser, err error) {
+	fs.FixRangeOption(options, o.size)
+
+	resp, info, err := o.getOrHead(ctx, "GET", options)
+	if err != nil {
+		return nil, err
+	}
+
+	// Don't check length or hash or metadata on partial content
+	if resp.StatusCode == http.StatusPartialContent {
+		return resp.Body, nil
+	}
+
+	err = o.decodeMetaData(info)
 	if err != nil {
 		_ = resp.Body.Close()
 		return nil, err
-	}
-	// Read sha1 from header if it isn't set
-	if o.sha1 == "" {
-		o.sha1 = resp.Header.Get(sha1Header)
-		fs.Debugf(o, "Reading sha1 from header - %q", o.sha1)
-		// if sha1 header is "none" (in big files), then need
-		// to read it from the metadata
-		if o.sha1 == "none" {
-			o.sha1 = resp.Header.Get(sha1InfoHeader)
-			fs.Debugf(o, "Reading sha1 from info - %q", o.sha1)
-		}
-	}
-	// Don't check length or hash on partial content
-	if resp.StatusCode == http.StatusPartialContent {
-		return resp.Body, nil
 	}
 	return newOpenFile(o, resp), nil
 }
@@ -1688,6 +1859,9 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	if o.fs.opt.Versions {
 		return errNotWithVersions
 	}
+	if o.fs.opt.VersionAt.IsSet() {
+		return errNotWithVersionAt
+	}
 	size := src.Size()
 
 	bucket, bucketPath := o.split()
@@ -1695,10 +1869,11 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	if err != nil {
 		return err
 	}
-	if size == -1 {
+	if size < 0 {
 		// Check if the file is large enough for a chunked upload (needs to be at least two chunks)
-		buf := o.fs.getUploadBlock()
-		n, err := io.ReadFull(in, buf)
+		rw := o.fs.getRW(false)
+
+		n, err := io.CopyN(rw, in, int64(o.fs.opt.ChunkSize))
 		if err == nil {
 			bufReader := bufio.NewReader(in)
 			in = bufReader
@@ -1707,26 +1882,36 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 
 		if err == nil {
 			fs.Debugf(o, "File is big enough for chunked streaming")
-			up, err := o.fs.newLargeUpload(ctx, o, in, src)
+			up, err := o.fs.newLargeUpload(ctx, o, in, src, o.fs.opt.ChunkSize, false, nil)
 			if err != nil {
-				o.fs.putUploadBlock(buf)
+				o.fs.putRW(rw)
 				return err
 			}
-			return up.Stream(ctx, buf)
-		} else if err == io.EOF || err == io.ErrUnexpectedEOF {
+			// NB Stream returns the buffer and token
+			err = up.Stream(ctx, rw)
+			if err != nil {
+				return err
+			}
+			return o.decodeMetaDataFileInfo(up.info)
+		} else if err == io.EOF {
 			fs.Debugf(o, "File has %d bytes, which makes only one chunk. Using direct upload.", n)
-			defer o.fs.putUploadBlock(buf)
-			size = int64(n)
-			in = bytes.NewReader(buf[:n])
+			defer o.fs.putRW(rw)
+			size = n
+			in = rw
 		} else {
+			o.fs.putRW(rw)
 			return err
 		}
 	} else if size > int64(o.fs.opt.UploadCutoff) {
-		up, err := o.fs.newLargeUpload(ctx, o, in, src)
+		chunkWriter, err := multipart.UploadMultipart(ctx, src, in, multipart.UploadMultipartOptions{
+			Open:        o.fs,
+			OpenOptions: options,
+		})
 		if err != nil {
 			return err
 		}
-		return up.Upload(ctx)
+		up := chunkWriter.(*largeUpload)
+		return o.decodeMetaDataFileInfo(up.info)
 	}
 
 	modTime := src.ModTime(ctx)
@@ -1806,9 +1991,10 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		Method:  "POST",
 		RootURL: upload.UploadURL,
 		Body:    in,
+		Options: options,
 		ExtraHeaders: map[string]string{
 			"Authorization":  upload.AuthorizationToken,
-			"X-Bz-File-Name": urlEncode(enc.FromStandardPath(bucketPath)),
+			"X-Bz-File-Name": urlEncode(o.fs.opt.Enc.FromStandardPath(bucketPath)),
 			"Content-Type":   fs.MimeType(ctx, src),
 			sha1Header:       calculatedSha1,
 			timeHeader:       timeString(modTime),
@@ -1833,11 +2019,49 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	return o.decodeMetaDataFileInfo(&response)
 }
 
+// OpenChunkWriter returns the chunk size and a ChunkWriter
+//
+// Pass in the remote and the src object
+// You can also use options to hint at the desired chunk size
+func (f *Fs) OpenChunkWriter(ctx context.Context, remote string, src fs.ObjectInfo, options ...fs.OpenOption) (info fs.ChunkWriterInfo, writer fs.ChunkWriter, err error) {
+	// FIXME what if file is smaller than 1 chunk?
+	if f.opt.Versions {
+		return info, nil, errNotWithVersions
+	}
+	if f.opt.VersionAt.IsSet() {
+		return info, nil, errNotWithVersionAt
+	}
+	//size := src.Size()
+
+	// Temporary Object under construction
+	o := &Object{
+		fs:     f,
+		remote: src.Remote(),
+	}
+
+	bucket, _ := o.split()
+	err = f.makeBucket(ctx, bucket)
+	if err != nil {
+		return info, nil, err
+	}
+
+	info = fs.ChunkWriterInfo{
+		ChunkSize:   int64(f.opt.ChunkSize),
+		Concurrency: o.fs.opt.UploadConcurrency,
+		//LeavePartsOnError: o.fs.opt.LeavePartsOnError,
+	}
+	up, err := f.newLargeUpload(ctx, o, nil, src, f.opt.ChunkSize, false, nil)
+	return info, up, err
+}
+
 // Remove an object
 func (o *Object) Remove(ctx context.Context) error {
 	bucket, bucketPath := o.split()
 	if o.fs.opt.Versions {
 		return errNotWithVersions
+	}
+	if o.fs.opt.VersionAt.IsSet() {
+		return errNotWithVersionAt
 	}
 	if o.fs.opt.HardDelete {
 		return o.fs.deleteByID(ctx, o.id, bucketPath)
@@ -1857,14 +2081,15 @@ func (o *Object) ID() string {
 
 // Check the interfaces are satisfied
 var (
-	_ fs.Fs           = &Fs{}
-	_ fs.Purger       = &Fs{}
-	_ fs.Copier       = &Fs{}
-	_ fs.PutStreamer  = &Fs{}
-	_ fs.CleanUpper   = &Fs{}
-	_ fs.ListRer      = &Fs{}
-	_ fs.PublicLinker = &Fs{}
-	_ fs.Object       = &Object{}
-	_ fs.MimeTyper    = &Object{}
-	_ fs.IDer         = &Object{}
+	_ fs.Fs              = &Fs{}
+	_ fs.Purger          = &Fs{}
+	_ fs.Copier          = &Fs{}
+	_ fs.PutStreamer     = &Fs{}
+	_ fs.CleanUpper      = &Fs{}
+	_ fs.ListRer         = &Fs{}
+	_ fs.PublicLinker    = &Fs{}
+	_ fs.OpenChunkWriter = &Fs{}
+	_ fs.Object          = &Object{}
+	_ fs.MimeTyper       = &Object{}
+	_ fs.IDer            = &Object{}
 )

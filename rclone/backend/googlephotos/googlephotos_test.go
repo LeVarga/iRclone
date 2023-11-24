@@ -3,7 +3,7 @@ package googlephotos
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"path"
 	"testing"
@@ -26,17 +26,6 @@ const (
 	fileNameUpload = "rclone-test-image2.jpg"
 )
 
-// Wrapper to override the remote for an object
-type overrideRemoteObject struct {
-	fs.Object
-	remote string
-}
-
-// Remote returns the overridden remote name
-func (o *overrideRemoteObject) Remote() string {
-	return o.remote
-}
-
 func TestIntegration(t *testing.T) {
 	ctx := context.Background()
 	fstest.Initialise()
@@ -45,14 +34,14 @@ func TestIntegration(t *testing.T) {
 	if *fstest.RemoteName == "" {
 		*fstest.RemoteName = "TestGooglePhotos:"
 	}
-	f, err := fs.NewFs(*fstest.RemoteName)
+	f, err := fs.NewFs(ctx, *fstest.RemoteName)
 	if err == fs.ErrorNotFoundInConfigFile {
-		t.Skip(fmt.Sprintf("Couldn't create google photos backend - skipping tests: %v", err))
+		t.Skipf("Couldn't create google photos backend - skipping tests: %v", err)
 	}
 	require.NoError(t, err)
 
 	// Create local Fs pointing at testfiles
-	localFs, err := fs.NewFs("testfiles")
+	localFs, err := fs.NewFs(ctx, "testfiles")
 	require.NoError(t, err)
 
 	t.Run("CreateAlbum", func(t *testing.T) {
@@ -66,7 +55,7 @@ func TestIntegration(t *testing.T) {
 			require.NoError(t, err)
 			in, err := srcObj.Open(ctx)
 			require.NoError(t, err)
-			dstObj, err := f.Put(ctx, in, &overrideRemoteObject{srcObj, remote})
+			dstObj, err := f.Put(ctx, in, fs.NewOverrideRemote(srcObj, remote))
 			require.NoError(t, err)
 			assert.Equal(t, remote, dstObj.Remote())
 			_ = in.Close()
@@ -109,7 +98,7 @@ func TestIntegration(t *testing.T) {
 			t.Run("ObjectOpen", func(t *testing.T) {
 				in, err := dstObj.Open(ctx)
 				require.NoError(t, err)
-				buf, err := ioutil.ReadAll(in)
+				buf, err := io.ReadAll(in)
 				require.NoError(t, err)
 				require.NoError(t, in.Close())
 				assert.True(t, len(buf) > 1000)
@@ -125,7 +114,7 @@ func TestIntegration(t *testing.T) {
 				assert.Equal(t, "2013-07-26 08:57:21 +0000 UTC", entries[0].ModTime(ctx).String())
 			})
 
-			// Check it is there in the date/month/year heirachy
+			// Check it is there in the date/month/year hierarchy
 			// 2013-07-13 is the creation date of the folder
 			checkPresent := func(t *testing.T, objPath string) {
 				entries, err := f.List(ctx, objPath)
@@ -165,7 +154,7 @@ func TestIntegration(t *testing.T) {
 			})
 
 			t.Run("NewFsIsFile", func(t *testing.T) {
-				fNew, err := fs.NewFs(*fstest.RemoteName + remote)
+				fNew, err := fs.NewFs(ctx, *fstest.RemoteName+remote)
 				assert.Equal(t, fs.ErrorIsFile, err)
 				leaf := path.Base(remote)
 				o, err := fNew.NewObject(ctx, leaf)
@@ -231,7 +220,7 @@ func TestIntegration(t *testing.T) {
 		require.NoError(t, err)
 		in, err := srcObj.Open(ctx)
 		require.NoError(t, err)
-		dstObj, err := f.Put(ctx, in, &overrideRemoteObject{srcObj, remote})
+		dstObj, err := f.Put(ctx, in, fs.NewOverrideRemote(srcObj, remote))
 		require.NoError(t, err)
 		assert.Equal(t, remote, dstObj.Remote())
 		_ = in.Close()

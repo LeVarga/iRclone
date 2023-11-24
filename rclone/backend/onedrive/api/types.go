@@ -1,5 +1,4 @@
-// Types passed and returned to and from the API
-
+// Package api provides types used by the OneDrive API.
 package api
 
 import (
@@ -14,7 +13,7 @@ const (
 	PackageTypeOneNote = "oneNote"
 )
 
-// Error is returned from one drive when things go wrong
+// Error is returned from OneDrive when things go wrong
 type Error struct {
 	ErrorInfo struct {
 		Code       string `json:"code"`
@@ -71,7 +70,7 @@ type Drive struct {
 	Quota     Quota       `json:"quota"`
 }
 
-// Timestamp represents represents date and time information for the
+// Timestamp represents date and time information for the
 // OneDrive API, by using ISO 8601 and is always in UTC time.
 type Timestamp time.Time
 
@@ -127,6 +126,7 @@ type HashesType struct {
 	Sha1Hash     string `json:"sha1Hash"`     // hex encoded SHA1 hash for the contents of the file (if available)
 	Crc32Hash    string `json:"crc32Hash"`    // hex encoded CRC32 value of the file (if available)
 	QuickXorHash string `json:"quickXorHash"` // base64 encoded QuickXorHash value of the file (if available)
+	Sha256Hash   string `json:"sha256Hash"`   // hex encoded SHA256 value of the file (if available)
 }
 
 // FileFacet groups file-related data on OneDrive into a single structure.
@@ -250,14 +250,16 @@ type MoveItemRequest struct {
 	FileSystemInfo  *FileSystemInfoFacet `json:"fileSystemInfo,omitempty"`  // File system information on client. Read-write.
 }
 
-//CreateShareLinkRequest is the request to create a sharing link
-//Always Type:view and Scope:anonymous for public sharing
+// CreateShareLinkRequest is the request to create a sharing link
+// Always Type:view and Scope:anonymous for public sharing
 type CreateShareLinkRequest struct {
-	Type  string `json:"type"`            //Link type in View, Edit or Embed
-	Scope string `json:"scope,omitempty"` //Optional. Scope in anonymousi, organization
+	Type     string     `json:"type"`                         // Link type in View, Edit or Embed
+	Scope    string     `json:"scope,omitempty"`              // Scope in anonymous, organization
+	Password string     `json:"password,omitempty"`           // The password of the sharing link that is set by the creator. Optional and OneDrive Personal only.
+	Expiry   *time.Time `json:"expirationDateTime,omitempty"` // A String with format of yyyy-MM-ddTHH:mm:ssZ of DateTime indicates the expiration time of the permission.
 }
 
-//CreateShareLinkResponse is the response from CreateShareLinkRequest
+// CreateShareLinkResponse is the response from CreateShareLinkRequest
 type CreateShareLinkResponse struct {
 	ID    string   `json:"id"`
 	Roles []string `json:"roles"`
@@ -272,24 +274,25 @@ type CreateShareLinkResponse struct {
 	} `json:"link"`
 }
 
-// AsyncOperationStatus provides information on the status of a asynchronous job progress.
+// AsyncOperationStatus provides information on the status of an asynchronous job progress.
 //
 // The following API calls return AsyncOperationStatus resources:
 //
 // Copy Item
 // Upload From URL
 type AsyncOperationStatus struct {
-	PercentageComplete float64 `json:"percentageComplete"` // An float value between 0 and 100 that indicates the percentage complete.
+	PercentageComplete float64 `json:"percentageComplete"` // A float value between 0 and 100 that indicates the percentage complete.
 	Status             string  `json:"status"`             // A string value that maps to an enumeration of possible values about the status of the job. "notStarted | inProgress | completed | updating | failed | deletePending | deleteFailed | waiting"
+	ErrorCode          string  `json:"errorCode"`          // Not officially documented :(
 }
 
 // GetID returns a normalized ID of the item
-// If DriveID is known it will be prefixed to the ID with # seperator
+// If DriveID is known it will be prefixed to the ID with # separator
 // Can be parsed using onedrive.parseNormalizedID(normalizedID)
 func (i *Item) GetID() string {
 	if i.IsRemote() && i.RemoteItem.ID != "" {
 		return i.RemoteItem.ParentReference.DriveID + "#" + i.RemoteItem.ID
-	} else if i.ParentReference != nil && strings.Index(i.ID, "#") == -1 {
+	} else if i.ParentReference != nil && !strings.Contains(i.ID, "#") {
 		return i.ParentReference.DriveID + "#" + i.ID
 	}
 	return i.ID
@@ -409,4 +412,29 @@ func (i *Item) GetParentReference() *ItemReference {
 // IsRemote checks if item is a remote item
 func (i *Item) IsRemote() bool {
 	return i.RemoteItem != nil
+}
+
+// User details for each version
+type User struct {
+	Email       string `json:"email"`
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName"`
+}
+
+// LastModifiedBy for each version
+type LastModifiedBy struct {
+	User User `json:"user"`
+}
+
+// Version info
+type Version struct {
+	ID                   string         `json:"id"`
+	LastModifiedDateTime time.Time      `json:"lastModifiedDateTime"`
+	Size                 int            `json:"size"`
+	LastModifiedBy       LastModifiedBy `json:"lastModifiedBy"`
+}
+
+// VersionsResponse is returned from /versions
+type VersionsResponse struct {
+	Versions []Version `json:"value"`
 }

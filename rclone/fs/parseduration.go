@@ -48,19 +48,9 @@ var ageSuffixes = []struct {
 	{Suffix: "", Multiplier: time.Second},
 }
 
-// ParseDuration parses a duration string. Accept ms|s|m|h|d|w|M|y suffixes. Defaults to second if not provided
-func ParseDuration(age string) (time.Duration, error) {
+// parse the age as suffixed ages
+func parseDurationSuffixes(age string) (time.Duration, error) {
 	var period float64
-
-	if age == "off" {
-		return time.Duration(DurationOff), nil
-	}
-
-	// Attempt to parse as a time.Duration first
-	d, err := time.ParseDuration(age)
-	if err == nil {
-		return d, nil
-	}
 
 	for _, ageSuffix := range ageSuffixes {
 		if strings.HasSuffix(age, ageSuffix.Suffix) {
@@ -78,9 +68,88 @@ func ParseDuration(age string) (time.Duration, error) {
 	return time.Duration(period), nil
 }
 
-// ReadableString parses d into a human readable duration.
-// Based on https://github.com/hako/durafmt
+// time formats to try parsing ages as - in order
+var timeFormats = []string{
+	time.RFC3339,
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05",
+	"2006-01-02",
+}
+
+// parse the date as time in various date formats
+func parseTimeDates(date string) (t time.Time, err error) {
+	var instant time.Time
+	for _, timeFormat := range timeFormats {
+		instant, err = time.ParseInLocation(timeFormat, date, time.Local)
+		if err == nil {
+			return instant, nil
+		}
+	}
+	return t, err
+}
+
+// parse the age as time before the epoch in various date formats
+func parseDurationDates(age string, epoch time.Time) (d time.Duration, err error) {
+	instant, err := parseTimeDates(age)
+	if err != nil {
+		return d, err
+	}
+
+	return epoch.Sub(instant), nil
+}
+
+// parseDurationFromNow parses a duration string. Allows ParseDuration to match the time
+// package and easier testing within the fs package.
+func parseDurationFromNow(age string, getNow func() time.Time) (d time.Duration, err error) {
+	if age == "off" {
+		return time.Duration(DurationOff), nil
+	}
+
+	// Attempt to parse as a time.Duration first
+	d, err = time.ParseDuration(age)
+	if err == nil {
+		return d, nil
+	}
+
+	d, err = parseDurationSuffixes(age)
+	if err == nil {
+		return d, nil
+	}
+
+	d, err = parseDurationDates(age, getNow())
+	if err == nil {
+		return d, nil
+	}
+
+	return d, err
+}
+
+// ParseDuration parses a duration string. Accept ms|s|m|h|d|w|M|y suffixes. Defaults to second if not provided
+func ParseDuration(age string) (time.Duration, error) {
+	return parseDurationFromNow(age, timeNowFunc)
+}
+
+// ReadableString parses d into a human-readable duration with units.
+// Examples: "3s", "1d2h23m20s", "292y24w3d23h47m16s".
 func (d Duration) ReadableString() string {
+	return d.readableString(0)
+}
+
+// ShortReadableString parses d into a human-readable duration with units.
+// This method returns it in short format, including the 3 most significant
+// units only, sacrificing precision if necessary. E.g. returns "292y24w3d"
+// instead of "292y24w3d23h47m16s", and "3d23h47m" instead of "3d23h47m16s".
+func (d Duration) ShortReadableString() string {
+	return d.readableString(3)
+}
+
+// readableString parses d into a human-readable duration with units.
+// Parameter maxNumberOfUnits limits number of significant units to include,
+// sacrificing precision. E.g. with argument 3 it returns "292y24w3d" instead
+// of "292y24w3d23h47m16s", and "3d23h47m" instead of "3d23h47m16s". Zero or
+// negative argument means include all.
+// Based on https://github.com/hako/durafmt
+func (d Duration) readableString(maxNumberOfUnits int) string {
 	switch d {
 	case DurationOff:
 		return "off"
@@ -128,6 +197,7 @@ func (d Duration) ReadableString() string {
 	}
 
 	// Construct duration string.
+	numberOfUnits := 0
 	for _, u := range [...]string{"y", "w", "d", "h", "m", "s", "ms"} {
 		v := durationMap[u]
 		strval := strconv.FormatInt(v, 10)
@@ -135,6 +205,10 @@ func (d Duration) ReadableString() string {
 			continue
 		}
 		readableString += strval + u
+		numberOfUnits++
+		if maxNumberOfUnits > 0 && numberOfUnits >= maxNumberOfUnits {
+			break
+		}
 	}
 
 	return readableString
@@ -155,9 +229,17 @@ func (d Duration) Type() string {
 	return "Duration"
 }
 
+// UnmarshalJSON makes sure the value can be parsed as a string or integer in JSON
+func (d *Duration) UnmarshalJSON(in []byte) error {
+	return UnmarshalJSONFlag(in, d, func(i int64) error {
+		*d = Duration(i)
+		return nil
+	})
+}
+
 // Scan implements the fmt.Scanner interface
 func (d *Duration) Scan(s fmt.ScanState, ch rune) error {
-	token, err := s.Token(true, nil)
+	token, err := s.Token(true, func(rune) bool { return true })
 	if err != nil {
 		return err
 	}

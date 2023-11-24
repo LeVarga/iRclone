@@ -78,10 +78,17 @@ class Rclone {
         }
         RcloneSetConfigPath(configPath.path)
     }
-    
+      
     ///Start the remote control server
     static func start() {
         RcloneStartRC(nil)
+        /*sleep(1)
+        let json: [String: Any] = ["path": configPath.path]
+        print(json)
+        let jsonData = try? JSONSerialization.data(withJSONObject: json)
+        Rclone.request(queryString: "config/setpath", jsonData: jsonData, timeout: .infinity, decodeAs: Empty.self, completion: { _, error in
+            
+        })*/
     }
     
     struct ErrorResponse: Decodable {

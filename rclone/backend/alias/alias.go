@@ -1,10 +1,13 @@
+// Package alias implements a virtual provider to rename existing remotes.
 package alias
 
 import (
+	"context"
 	"errors"
 	"strings"
 
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/cache"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
 	"github.com/rclone/rclone/fs/fspath"
@@ -18,7 +21,7 @@ func init() {
 		NewFs:       NewFs,
 		Options: []fs.Option{{
 			Name:     "remote",
-			Help:     "Remote or path to alias.\nCan be \"myremote:path/to/dir\", \"myremote:bucket\", \"myremote:\" or \"/local/path\".",
+			Help:     "Remote or path to alias.\n\nCan be \"myremote:path/to/dir\", \"myremote:bucket\", \"myremote:\" or \"/local/path\".",
 			Required: true,
 		}},
 	}
@@ -33,7 +36,7 @@ type Options struct {
 // NewFs constructs an Fs from the path.
 //
 // The returned Fs is the actual Fs, referenced by remote in the config
-func NewFs(name, root string, m configmap.Mapper) (fs.Fs, error) {
+func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, error) {
 	// Parse config into Options struct
 	opt := new(Options)
 	err := configstruct.Set(m, opt)
@@ -46,9 +49,5 @@ func NewFs(name, root string, m configmap.Mapper) (fs.Fs, error) {
 	if strings.HasPrefix(opt.Remote, name+":") {
 		return nil, errors.New("can't point alias remote at itself - check the value of the remote setting")
 	}
-	fsInfo, configName, fsPath, config, err := fs.ConfigFs(opt.Remote)
-	if err != nil {
-		return nil, err
-	}
-	return fsInfo.NewFs(configName, fspath.JoinRootPath(fsPath, root), config)
+	return cache.Get(ctx, fspath.JoinRootPath(opt.Remote, root))
 }

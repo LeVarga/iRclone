@@ -1,5 +1,4 @@
-// +build go1.10
-
+// Package main provides utilities for encoder.
 package main
 
 import (
@@ -20,7 +19,7 @@ const (
 )
 
 type mapping struct {
-	mask     uint
+	mask     encoder.MultiEncoder
 	src, dst []rune
 }
 type stringPair struct {
@@ -36,7 +35,7 @@ package encoder
 `
 
 var maskBits = []struct {
-	mask uint
+	mask encoder.MultiEncoder
 	name string
 }{
 	{encoder.EncodeZero, "EncodeZero"},
@@ -44,6 +43,8 @@ var maskBits = []struct {
 	{encoder.EncodeSingleQuote, "EncodeSingleQuote"},
 	{encoder.EncodeBackQuote, "EncodeBackQuote"},
 	{encoder.EncodeLtGt, "EncodeLtGt"},
+	{encoder.EncodeSquareBracket, "EncodeSquareBracket"},
+	{encoder.EncodeSemicolon, "EncodeSemicolon"},
 	{encoder.EncodeDollar, "EncodeDollar"},
 	{encoder.EncodeDoubleQuote, "EncodeDoubleQuote"},
 	{encoder.EncodeColon, "EncodeColon"},
@@ -68,7 +69,7 @@ var maskBits = []struct {
 }
 
 type edge struct {
-	mask    uint
+	mask    encoder.MultiEncoder
 	name    string
 	edge    int
 	orig    []rune
@@ -106,6 +107,16 @@ var allMappings = []mapping{{
 		'<', '>',
 	}, []rune{
 		'＜', '＞',
+	}}, {
+	encoder.EncodeSquareBracket, []rune{
+		'[', ']',
+	}, []rune{
+		'［', '］',
+	}}, {
+	encoder.EncodeSemicolon, []rune{
+		';',
+	}, []rune{
+		'；',
 	}}, {
 	encoder.EncodeDoubleQuote, []rune{
 		'"',
@@ -429,7 +440,7 @@ func fatalW(_ int, err error) func(...interface{}) {
 	return func(s ...interface{}) {}
 }
 
-func invalidMask(mask uint) bool {
+func invalidMask(mask encoder.MultiEncoder) bool {
 	return mask&(encoder.EncodeCtl|encoder.EncodeCrLf) != 0 && mask&(encoder.EncodeLeftCrLfHtVt|encoder.EncodeRightCrLfHtVt) != 0
 }
 
@@ -445,7 +456,7 @@ func runeRange(l, h rune) []rune {
 	return out
 }
 
-func getMapping(mask uint) mapping {
+func getMapping(mask encoder.MultiEncoder) mapping {
 	for _, m := range allMappings {
 		if m.mask == mask {
 			return m
@@ -455,17 +466,13 @@ func getMapping(mask uint) mapping {
 }
 func collectEncodables(m []mapping) (out []rune) {
 	for _, s := range m {
-		for _, r := range s.src {
-			out = append(out, r)
-		}
+		out = append(out, s.src...)
 	}
 	return
 }
 func collectEncoded(m []mapping) (out []rune) {
 	for _, s := range m {
-		for _, r := range s.dst {
-			out = append(out, r)
-		}
+		out = append(out, s.dst...)
 	}
 	return
 }
@@ -602,7 +609,7 @@ func runePos(r rune, s []rune) int {
 	return -1
 }
 
-// quotedToString returns a string for the chars slice where a encoder.QuoteRune is
+// quotedToString returns a string for the chars slice where an encoder.QuoteRune is
 // inserted before a char[i] when quoted[i] is true.
 func quotedToString(chars []rune, quoted []bool) string {
 	var out strings.Builder

@@ -1,5 +1,6 @@
 // Syslog interface for Unix variants only
 
+//go:build !windows && !nacl && !plan9
 // +build !windows,!nacl,!plan9
 
 package log
@@ -27,14 +28,22 @@ var (
 		"CRON":     syslog.LOG_CRON,
 		"AUTHPRIV": syslog.LOG_AUTHPRIV,
 		"FTP":      syslog.LOG_FTP,
+		"LOCAL0":   syslog.LOG_LOCAL0,
+		"LOCAL1":   syslog.LOG_LOCAL1,
+		"LOCAL2":   syslog.LOG_LOCAL2,
+		"LOCAL3":   syslog.LOG_LOCAL3,
+		"LOCAL4":   syslog.LOG_LOCAL4,
+		"LOCAL5":   syslog.LOG_LOCAL5,
+		"LOCAL6":   syslog.LOG_LOCAL6,
+		"LOCAL7":   syslog.LOG_LOCAL7,
 	}
 )
 
 // Starts syslog
 func startSysLog() bool {
-	facility, ok := syslogFacilityMap[*syslogFacility]
+	facility, ok := syslogFacilityMap[Opt.SyslogFacility]
 	if !ok {
-		log.Fatalf("Unknown syslog facility %q - man syslog for list", *syslogFacility)
+		log.Fatalf("Unknown syslog facility %q - man syslog for list", Opt.SyslogFacility)
 	}
 	Me := path.Base(os.Args[0])
 	w, err := syslog.New(syslog.LOG_NOTICE|facility, Me)

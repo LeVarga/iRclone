@@ -2,16 +2,18 @@
 package random
 
 import (
+	cryptorand "crypto/rand"
 	"encoding/base64"
-	"math/rand"
-
-	"github.com/pkg/errors"
+	"encoding/binary"
+	"fmt"
+	mathrand "math/rand"
 )
 
-// String create a random string for test purposes.
+// StringFn create a random string for test purposes using the random
+// number generator function passed in.
 //
 // Do not use these for passwords.
-func String(n int) string {
+func StringFn(n int, randIntn func(n int) int) string {
 	const (
 		vowel     = "aeiou"
 		consonant = "bcdfghjklmnpqrstvwxyz"
@@ -23,16 +25,23 @@ func String(n int) string {
 	for i := range out {
 		source := pattern[p]
 		p = (p + 1) % len(pattern)
-		out[i] = source[rand.Intn(len(source))]
+		out[i] = source[randIntn(len(source))]
 	}
 	return string(out)
+}
+
+// String create a random string for test purposes.
+//
+// Do not use these for passwords.
+func String(n int) string {
+	return StringFn(n, mathrand.Intn)
 }
 
 // Password creates a crypto strong password which is just about
 // memorable.  The password is composed of printable ASCII characters
 // from the base64 alphabet.
 //
-// Requres password strength in bits.
+// Requires password strength in bits.
 // 64 is just about memorable
 // 128 is secure
 func Password(bits int) (password string, err error) {
@@ -41,13 +50,29 @@ func Password(bits int) (password string, err error) {
 		bytes++
 	}
 	var pw = make([]byte, bytes)
-	n, err := rand.Read(pw)
+	n, err := cryptorand.Read(pw)
 	if err != nil {
-		return "", errors.Wrap(err, "password read failed")
+		return "", fmt.Errorf("password read failed: %w", err)
 	}
 	if n != bytes {
-		return "", errors.Errorf("password short read: %d", n)
+		return "", fmt.Errorf("password short read: %d", n)
 	}
 	password = base64.RawURLEncoding.EncodeToString(pw)
 	return password, nil
+}
+
+// Seed the global math/rand with crypto strong data
+//
+// This doesn't make it OK to use math/rand in crypto sensitive
+// environments - don't do that! However it does help to mitigate the
+// problem if that happens accidentally. This would have helped with
+// CVE-2020-28924 - #4783
+func Seed() error {
+	var seed int64
+	err := binary.Read(cryptorand.Reader, binary.LittleEndian, &seed)
+	if err != nil {
+		return fmt.Errorf("failed to read random seed: %w", err)
+	}
+	mathrand.Seed(seed)
+	return nil
 }

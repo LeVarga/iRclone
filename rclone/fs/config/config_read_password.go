@@ -1,8 +1,8 @@
-// ReadPassword for OSes which are supported by golang.org/x/crypto/ssh/terminal
+// ReadPassword for OSes which are supported by golang.org/x/term
 // See https://github.com/golang/go/issues/14441 - plan9
-//     https://github.com/golang/go/issues/13085 - solaris
 
-// +build !solaris,!plan9
+//go:build !plan9
+// +build !plan9
 
 package config
 
@@ -11,7 +11,7 @@ import (
 	"log"
 	"os"
 
-	"golang.org/x/crypto/ssh/terminal"
+	"github.com/rclone/rclone/lib/terminal"
 )
 
 // ReadPassword reads a password without echoing it to the terminal.

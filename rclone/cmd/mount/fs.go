@@ -1,6 +1,7 @@
 // FUSE main Fs
 
-// +build linux darwin freebsd
+//go:build linux || freebsd
+// +build linux freebsd
 
 package mount
 
@@ -10,28 +11,30 @@ import (
 
 	"bazil.org/fuse"
 	fusefs "bazil.org/fuse/fs"
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/cmd/mountlib"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/log"
 	"github.com/rclone/rclone/vfs"
-	"github.com/rclone/rclone/vfs/vfsflags"
 )
 
 // FS represents the top level filing system
 type FS struct {
 	*vfs.VFS
-	f fs.Fs
+	f      fs.Fs
+	opt    *mountlib.Options
+	server *fusefs.Server
 }
 
 // Check interface satisfied
 var _ fusefs.FS = (*FS)(nil)
 
 // NewFS makes a new FS
-func NewFS(f fs.Fs) *FS {
+func NewFS(VFS *vfs.VFS, opt *mountlib.Options) *FS {
 	fsys := &FS{
-		VFS: vfs.New(f, &vfsflags.Opt),
-		f:   f,
+		VFS: VFS,
+		f:   VFS.Fs(),
+		opt: opt,
 	}
 	return fsys
 }
@@ -43,7 +46,7 @@ func (f *FS) Root() (node fusefs.Node, err error) {
 	if err != nil {
 		return nil, translateError(err)
 	}
-	return &Dir{root}, nil
+	return &Dir{root, f}, nil
 }
 
 // Check interface satisfied
@@ -54,25 +57,15 @@ var _ fusefs.FSStatfser = (*FS)(nil)
 func (f *FS) Statfs(ctx context.Context, req *fuse.StatfsRequest, resp *fuse.StatfsResponse) (err error) {
 	defer log.Trace("", "")("stat=%+v, err=%v", resp, &err)
 	const blockSize = 4096
-	const fsBlocks = (1 << 50) / blockSize
-	resp.Blocks = fsBlocks  // Total data blocks in file system.
-	resp.Bfree = fsBlocks   // Free blocks in file system.
-	resp.Bavail = fsBlocks  // Free blocks in file system if you're not root.
-	resp.Files = 1e9        // Total files in file system.
-	resp.Ffree = 1e9        // Free files in file system.
-	resp.Bsize = blockSize  // Block size
-	resp.Namelen = 255      // Maximum file name length?
-	resp.Frsize = blockSize // Fragment size, smallest addressable data size in the file system.
-	total, used, free := f.VFS.Statfs()
-	if total >= 0 {
-		resp.Blocks = uint64(total) / blockSize
-	}
-	if used >= 0 {
-		resp.Bfree = resp.Blocks - uint64(used)/blockSize
-	}
-	if free >= 0 {
-		resp.Bavail = uint64(free) / blockSize
-	}
+	total, _, free := f.VFS.Statfs()
+	resp.Blocks = uint64(total) / blockSize // Total data blocks in file system.
+	resp.Bfree = uint64(free) / blockSize   // Free blocks in file system.
+	resp.Bavail = resp.Bfree                // Free blocks in file system if you're not root.
+	resp.Files = 1e9                        // Total files in file system.
+	resp.Ffree = 1e9                        // Free files in file system.
+	resp.Bsize = blockSize                  // Block size
+	resp.Namelen = 255                      // Maximum file name length?
+	resp.Frsize = blockSize                 // Fragment size, smallest addressable data size in the file system.
 	mountlib.ClipBlocks(&resp.Blocks)
 	mountlib.ClipBlocks(&resp.Bfree)
 	mountlib.ClipBlocks(&resp.Bavail)
@@ -84,15 +77,16 @@ func translateError(err error) error {
 	if err == nil {
 		return nil
 	}
-	switch errors.Cause(err) {
+	_, uErr := fserrors.Cause(err)
+	switch uErr {
 	case vfs.OK:
 		return nil
-	case vfs.ENOENT:
-		return fuse.ENOENT
-	case vfs.EEXIST:
-		return fuse.EEXIST
-	case vfs.EPERM:
-		return fuse.EPERM
+	case vfs.ENOENT, fs.ErrorDirNotFound, fs.ErrorObjectNotFound:
+		return fuse.Errno(syscall.ENOENT)
+	case vfs.EEXIST, fs.ErrorDirExists:
+		return fuse.Errno(syscall.EEXIST)
+	case vfs.EPERM, fs.ErrorPermissionDenied:
+		return fuse.Errno(syscall.EPERM)
 	case vfs.ECLOSED:
 		return fuse.Errno(syscall.EBADF)
 	case vfs.ENOTEMPTY:
@@ -103,10 +97,11 @@ func translateError(err error) error {
 		return fuse.Errno(syscall.EBADF)
 	case vfs.EROFS:
 		return fuse.Errno(syscall.EROFS)
-	case vfs.ENOSYS:
-		return fuse.ENOSYS
+	case vfs.ENOSYS, fs.ErrorNotImplemented:
+		return syscall.ENOSYS
 	case vfs.EINVAL:
 		return fuse.Errno(syscall.EINVAL)
 	}
+	fs.Errorf(nil, "IO error: %v", err)
 	return err
 }

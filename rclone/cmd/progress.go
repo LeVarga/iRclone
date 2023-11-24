@@ -12,6 +12,7 @@ import (
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/accounting"
 	"github.com/rclone/rclone/fs/log"
+	"github.com/rclone/rclone/fs/operations"
 	"github.com/rclone/rclone/lib/terminal"
 )
 
@@ -19,7 +20,7 @@ const (
 	// interval between progress prints
 	defaultProgressInterval = 500 * time.Millisecond
 	// time format for logging
-	logTimeFormat = "2006-01-02 15:04:05"
+	logTimeFormat = "2006/01/02 15:04:05"
 )
 
 // startProgress starts the progress bar printing
@@ -28,6 +29,8 @@ const (
 func startProgress() func() {
 	stopStats := make(chan struct{})
 	oldLogPrint := fs.LogPrint
+	oldSyncPrint := operations.SyncPrintf
+
 	if !log.Redirected() {
 		// Intercept the log calls if not logging to file or syslog
 		fs.LogPrint = func(level fs.LogLevel, text string) {
@@ -35,6 +38,12 @@ func startProgress() func() {
 
 		}
 	}
+
+	// Intercept output from functions such as HashLister to stdout
+	operations.SyncPrintf = func(format string, a ...interface{}) {
+		printProgress(fmt.Sprintf(format, a...))
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -52,6 +61,7 @@ func startProgress() func() {
 				ticker.Stop()
 				printProgress("")
 				fs.LogPrint = oldLogPrint
+				operations.SyncPrintf = oldSyncPrint
 				fmt.Println("")
 				return
 			}
@@ -65,14 +75,13 @@ func startProgress() func() {
 
 // state for the progress printing
 var (
-	nlines     = 0 // number of lines in the previous stats block
-	progressMu sync.Mutex
+	nlines = 0 // number of lines in the previous stats block
 )
 
 // printProgress prints the progress with an optional log
 func printProgress(logMessage string) {
-	progressMu.Lock()
-	defer progressMu.Unlock()
+	operations.StdoutMutex.Lock()
+	defer operations.StdoutMutex.Unlock()
 
 	var buf bytes.Buffer
 	w, _ := terminal.GetSize()

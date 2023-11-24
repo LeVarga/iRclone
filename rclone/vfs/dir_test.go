@@ -7,30 +7,30 @@ import (
 	"sort"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/operations"
 	"github.com/rclone/rclone/fstest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func dirCreate(t *testing.T, r *fstest.Run) (*VFS, *Dir, fstest.Item) {
-	vfs := New(r.Fremote, nil)
+func dirCreate(t *testing.T) (r *fstest.Run, vfs *VFS, dir *Dir, item fstest.Item) {
+	r, vfs = newTestVFS(t)
 
 	file1 := r.WriteObject(context.Background(), "dir/file1", "file1 contents", t1)
-	fstest.CheckItems(t, r.Fremote, file1)
+	r.CheckRemoteItems(t, file1)
 
 	node, err := vfs.Stat("dir")
 	require.NoError(t, err)
 	require.True(t, node.IsDir())
 
-	return vfs, node.(*Dir), file1
+	return r, vfs, node.(*Dir), file1
 }
 
 func TestDirMethods(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, dir, _ := dirCreate(t, r)
+	_, vfs, dir, _ := dirCreate(t)
 
 	// String
 	assert.Equal(t, "dir/", dir.String())
@@ -53,6 +53,10 @@ func TestDirMethods(t *testing.T) {
 
 	// Sys
 	assert.Equal(t, nil, dir.Sys())
+
+	// SetSys
+	dir.SetSys(42)
+	assert.Equal(t, 42, dir.Sys())
 
 	// Inode
 	assert.NotEqual(t, uint64(0), dir.Inode())
@@ -77,9 +81,7 @@ func TestDirMethods(t *testing.T) {
 }
 
 func TestDirForgetAll(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, dir, file1 := dirCreate(t, r)
+	_, vfs, dir, file1 := dirCreate(t)
 
 	// Make sure / and dir are in cache
 	_, err := vfs.Stat(file1.Path)
@@ -106,9 +108,7 @@ func TestDirForgetAll(t *testing.T) {
 }
 
 func TestDirForgetPath(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, dir, file1 := dirCreate(t, r)
+	_, vfs, dir, file1 := dirCreate(t)
 
 	// Make sure / and dir are in cache
 	_, err := vfs.Stat(file1.Path)
@@ -139,12 +139,10 @@ func TestDirForgetPath(t *testing.T) {
 }
 
 func TestDirWalk(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, _, file1 := dirCreate(t, r)
+	r, vfs, _, file1 := dirCreate(t)
 
 	file2 := r.WriteObject(context.Background(), "fil/a/b/c", "super long file", t1)
-	fstest.CheckItems(t, r.Fremote, file1, file2)
+	r.CheckRemoteItems(t, file1, file2)
 
 	root, err := vfs.Root()
 	require.NoError(t, err)
@@ -209,9 +207,7 @@ func TestDirWalk(t *testing.T) {
 }
 
 func TestDirSetModTime(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, dir, _ := dirCreate(t, r)
+	_, vfs, dir, _ := dirCreate(t)
 
 	err := dir.SetModTime(t1)
 	require.NoError(t, err)
@@ -227,9 +223,7 @@ func TestDirSetModTime(t *testing.T) {
 }
 
 func TestDirStat(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	_, dir, _ := dirCreate(t, r)
+	_, _, dir, _ := dirCreate(t)
 
 	node, err := dir.Stat("file1")
 	require.NoError(t, err)
@@ -238,7 +232,7 @@ func TestDirStat(t *testing.T) {
 	assert.Equal(t, int64(14), node.Size())
 	assert.Equal(t, "file1", node.Name())
 
-	node, err = dir.Stat("not found")
+	_, err = dir.Stat("not found")
 	assert.Equal(t, ENOENT, err)
 }
 
@@ -254,14 +248,12 @@ func checkListing(t *testing.T, dir *Dir, want []string) {
 }
 
 func TestDirReadDirAll(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs := New(r.Fremote, nil)
+	r, vfs := newTestVFS(t)
 
 	file1 := r.WriteObject(context.Background(), "dir/file1", "file1 contents", t1)
 	file2 := r.WriteObject(context.Background(), "dir/file2", "file2- contents", t2)
 	file3 := r.WriteObject(context.Background(), "dir/subdir/file3", "file3-- contents", t3)
-	fstest.CheckItems(t, r.Fremote, file1, file2, file3)
+	r.CheckRemoteItems(t, file1, file2, file3)
 
 	node, err := vfs.Stat("dir")
 	require.NoError(t, err)
@@ -271,21 +263,72 @@ func TestDirReadDirAll(t *testing.T) {
 
 	node, err = vfs.Stat("")
 	require.NoError(t, err)
-	dir = node.(*Dir)
+	root := node.(*Dir)
 
-	checkListing(t, dir, []string{"dir,0,true"})
+	checkListing(t, root, []string{"dir,0,true"})
 
 	node, err = vfs.Stat("dir/subdir")
 	require.NoError(t, err)
-	dir = node.(*Dir)
+	subdir := node.(*Dir)
 
-	checkListing(t, dir, []string{"file3,16,false"})
+	checkListing(t, subdir, []string{"file3,16,false"})
+
+	t.Run("Virtual", func(t *testing.T) {
+		// Add some virtual entries and check what happens
+		dir.AddVirtual("virtualFile", 17, false)
+		dir.AddVirtual("virtualDir", 0, true)
+		// Remove some existing entries
+		dir.DelVirtual("file2")
+		dir.DelVirtual("subdir")
+
+		checkListing(t, dir, []string{"file1,14,false", "virtualDir,0,true", "virtualFile,17,false"})
+
+		// Now action the deletes and uploads
+		_ = r.WriteObject(context.Background(), "dir/virtualFile", "virtualFile contents", t1)
+		_ = r.WriteObject(context.Background(), "dir/virtualDir/testFile", "testFile contents", t1)
+		o, err := r.Fremote.NewObject(context.Background(), "dir/file2")
+		require.NoError(t, err)
+		require.NoError(t, o.Remove(context.Background()))
+		require.NoError(t, operations.Purge(context.Background(), r.Fremote, "dir/subdir"))
+
+		// Force a directory reload...
+		dir.invalidateDir("dir")
+
+		checkListing(t, dir, []string{"file1,14,false", "virtualDir,0,true", "virtualFile,20,false"})
+
+		// check no virtuals left
+		dir.mu.Lock()
+		assert.Nil(t, dir.virtual)
+		dir.mu.Unlock()
+
+		// Add some virtual entries and check what happens
+		dir.AddVirtual("virtualFile2", 100, false)
+		dir.AddVirtual("virtualDir2", 0, true)
+		// Remove some existing entries
+		dir.DelVirtual("file1")
+
+		checkListing(t, dir, []string{"virtualDir,0,true", "virtualDir2,0,true", "virtualFile,20,false", "virtualFile2,100,false"})
+
+		// Force a directory reload...
+		dir.invalidateDir("dir")
+
+		want := []string{"file1,14,false", "virtualDir,0,true", "virtualDir2,0,true", "virtualFile,20,false", "virtualFile2,100,false"}
+		features := r.Fremote.Features()
+		if features.CanHaveEmptyDirectories {
+			// snip out virtualDir2 which will only be present if can't have empty dirs
+			want = append(want[:2], want[3:]...)
+		}
+		checkListing(t, dir, want)
+
+		// Check that forgetting the root doesn't invalidate the virtual entries
+		root.ForgetAll()
+
+		checkListing(t, dir, want)
+	})
 }
 
 func TestDirOpen(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	_, dir, _ := dirCreate(t, r)
+	_, _, dir, _ := dirCreate(t)
 
 	fd, err := dir.Open(os.O_RDONLY)
 	require.NoError(t, err)
@@ -293,18 +336,19 @@ func TestDirOpen(t *testing.T) {
 	assert.True(t, ok)
 	require.NoError(t, fd.Close())
 
-	fd, err = dir.Open(os.O_WRONLY)
+	_, err = dir.Open(os.O_WRONLY)
 	assert.Equal(t, EPERM, err)
 }
 
 func TestDirCreate(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, dir, _ := dirCreate(t, r)
+	_, vfs, dir, _ := dirCreate(t)
 
+	origModTime := dir.ModTime()
+	time.Sleep(100 * time.Millisecond) // for low rez Windows timers
 	file, err := dir.Create("potato", os.O_WRONLY|os.O_CREATE)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), file.Size())
+	assert.True(t, dir.ModTime().After(origModTime))
 
 	fd, err := file.Open(os.O_WRONLY | os.O_CREATE)
 	require.NoError(t, err)
@@ -326,21 +370,29 @@ func TestDirCreate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(5), file2.Size())
 
+	// Try creating the file again - make sure we get the same file node
+	file3, err := dir.Create("potato", os.O_RDWR|os.O_CREATE)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), file3.Size())
+	assert.Equal(t, fmt.Sprintf("%p", file), fmt.Sprintf("%p", file3), "didn't return same node")
+
+	// Test read only fs creating new
 	vfs.Opt.ReadOnly = true
 	_, err = dir.Create("sausage", os.O_WRONLY|os.O_CREATE)
 	assert.Equal(t, EROFS, err)
 }
 
 func TestDirMkdir(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, dir, file1 := dirCreate(t, r)
+	r, vfs, dir, file1 := dirCreate(t)
 
 	_, err := dir.Mkdir("file1")
 	assert.Error(t, err)
 
+	origModTime := dir.ModTime()
+	time.Sleep(100 * time.Millisecond) // for low rez Windows timers
 	sub, err := dir.Mkdir("sub")
 	assert.NoError(t, err)
+	assert.True(t, dir.ModTime().After(origModTime))
 
 	// check the vfs
 	checkListing(t, dir, []string{"file1,14,false", "sub,0,true"})
@@ -355,9 +407,7 @@ func TestDirMkdir(t *testing.T) {
 }
 
 func TestDirMkdirSub(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, dir, file1 := dirCreate(t, r)
+	r, vfs, dir, file1 := dirCreate(t)
 
 	_, err := dir.Mkdir("file1")
 	assert.Error(t, err)
@@ -382,9 +432,7 @@ func TestDirMkdirSub(t *testing.T) {
 }
 
 func TestDirRemove(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, dir, _ := dirCreate(t, r)
+	r, vfs, dir, _ := dirCreate(t)
 
 	// check directory is there
 	node, err := vfs.Stat("dir")
@@ -405,7 +453,7 @@ func TestDirRemove(t *testing.T) {
 	require.NoError(t, err)
 
 	// check directory is not there
-	node, err = vfs.Stat("dir")
+	_, err = vfs.Stat("dir")
 	assert.Equal(t, ENOENT, err)
 
 	// check the vfs
@@ -423,9 +471,7 @@ func TestDirRemove(t *testing.T) {
 }
 
 func TestDirRemoveAll(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, dir, _ := dirCreate(t, r)
+	r, vfs, dir, _ := dirCreate(t)
 
 	// Remove the directory and contents
 	err := dir.RemoveAll()
@@ -446,12 +492,13 @@ func TestDirRemoveAll(t *testing.T) {
 }
 
 func TestDirRemoveName(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, dir, _ := dirCreate(t, r)
+	r, vfs, dir, _ := dirCreate(t)
 
+	origModTime := dir.ModTime()
+	time.Sleep(100 * time.Millisecond) // for low rez Windows timers
 	err := dir.RemoveName("file1")
 	require.NoError(t, err)
+	assert.True(t, dir.ModTime().After(origModTime))
 	checkListing(t, dir, []string(nil))
 	root, err := vfs.Root()
 	require.NoError(t, err)
@@ -467,15 +514,13 @@ func TestDirRemoveName(t *testing.T) {
 }
 
 func TestDirRename(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
+	r, vfs, dir, file1 := dirCreate(t)
 
 	features := r.Fremote.Features()
 	if features.DirMove == nil && features.Move == nil && features.Copy == nil {
-		return // skip as can't rename directories
+		t.Skip("can't rename directories")
 	}
 
-	vfs, dir, file1 := dirCreate(t, r)
 	file3 := r.WriteObject(context.Background(), "dir/file3", "file3 contents!", t1)
 	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{file1, file3}, []string{"dir"}, r.Fremote.Precision())
 
@@ -502,8 +547,11 @@ func TestDirRename(t *testing.T) {
 	dir = node.(*Dir)
 
 	// Rename a file
+	origModTime := dir.ModTime()
+	time.Sleep(100 * time.Millisecond) // for low rez Windows timers
 	err = dir.Rename("file1", "file2", root)
 	assert.NoError(t, err)
+	assert.True(t, dir.ModTime().After(origModTime))
 	checkListing(t, root, []string{"dir2,0,true", "file2,14,false"})
 	checkListing(t, dir, []string{"file3,15,false"})
 
@@ -535,10 +583,14 @@ func TestDirRename(t *testing.T) {
 		"renamed empty directory,0,true",
 	})
 	// ...we don't check the underlying f.Fremote because on
-	// bucket based remotes the directory won't be there
+	// bucket-based remotes the directory won't be there
 
 	// read only check
 	vfs.Opt.ReadOnly = true
 	err = dir.Rename("potato", "tuba", dir)
 	assert.Equal(t, EROFS, err)
+}
+
+func TestDirStructSize(t *testing.T) {
+	t.Logf("Dir struct has size %d bytes", unsafe.Sizeof(Dir{}))
 }

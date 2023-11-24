@@ -3,19 +3,21 @@ package http
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/rclone/rclone/fs"
-	"github.com/rclone/rclone/fs/config"
+	"github.com/rclone/rclone/fs/config/configfile"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fstest"
 	"github.com/rclone/rclone/lib/rest"
@@ -24,16 +26,34 @@ import (
 )
 
 var (
-	remoteName = "TestHTTP"
-	testPath   = "test"
-	filesPath  = filepath.Join(testPath, "files")
-	headers    = []string{"X-Potato", "sausage", "X-Rhubarb", "cucumber"}
+	remoteName  = "TestHTTP"
+	testPath    = "test"
+	filesPath   = filepath.Join(testPath, "files")
+	headers     = []string{"X-Potato", "sausage", "X-Rhubarb", "cucumber"}
+	lineEndSize = 1
 )
 
-// prepareServer the test server and return a function to tidy it up afterwards
-func prepareServer(t *testing.T) (configmap.Simple, func()) {
+// prepareServer prepares the test server and shuts it down automatically
+// when the test completes.
+func prepareServer(t *testing.T) configmap.Simple {
 	// file server for test/files
 	fileServer := http.FileServer(http.Dir(filesPath))
+
+	// verify the file path is correct, and also check which line endings
+	// are used to get sizes right ("\n" except on Windows, but even there
+	// we may have "\n" or "\r\n" depending on git crlf setting)
+	fileList, err := os.ReadDir(filesPath)
+	require.NoError(t, err)
+	require.Greater(t, len(fileList), 0)
+	for _, file := range fileList {
+		if !file.IsDir() {
+			data, _ := os.ReadFile(filepath.Join(filesPath, file.Name()))
+			if strings.HasSuffix(string(data), "\r\n") {
+				lineEndSize = 2
+			}
+			break
+		}
+	}
 
 	// test the headers are there then pass on to fileServer
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +67,7 @@ func prepareServer(t *testing.T) (configmap.Simple, func()) {
 	ts := httptest.NewServer(handler)
 
 	// Configure the remote
-	config.LoadConfig()
+	configfile.Install()
 	// fs.Config.LogLevel = fs.LogLevelDebug
 	// fs.Config.DumpHeaders = true
 	// fs.Config.DumpBodies = true
@@ -59,20 +79,21 @@ func prepareServer(t *testing.T) (configmap.Simple, func()) {
 		"url":     ts.URL,
 		"headers": strings.Join(headers, ","),
 	}
+	t.Cleanup(ts.Close)
 
-	// return a function to tidy up
-	return m, ts.Close
+	return m
 }
 
-// prepare the test server and return a function to tidy it up afterwards
-func prepare(t *testing.T) (fs.Fs, func()) {
-	m, tidy := prepareServer(t)
+// prepare prepares the test server and shuts it down automatically
+// when the test completes.
+func prepare(t *testing.T) fs.Fs {
+	m := prepareServer(t)
 
 	// Instantiate it
-	f, err := NewFs(remoteName, "", m)
+	f, err := NewFs(context.Background(), remoteName, "", m)
 	require.NoError(t, err)
 
-	return f, tidy
+	return f
 }
 
 func testListRoot(t *testing.T, f fs.Fs, noSlash bool) {
@@ -91,7 +112,7 @@ func testListRoot(t *testing.T, f fs.Fs, noSlash bool) {
 
 	e = entries[1]
 	assert.Equal(t, "one%.txt", e.Remote())
-	assert.Equal(t, int64(6), e.Size())
+	assert.Equal(t, int64(5+lineEndSize), e.Size())
 	_, ok = e.(*Object)
 	assert.True(t, ok)
 
@@ -108,29 +129,26 @@ func testListRoot(t *testing.T, f fs.Fs, noSlash bool) {
 		_, ok = e.(fs.Directory)
 		assert.True(t, ok)
 	} else {
-		assert.Equal(t, int64(41), e.Size())
+		assert.Equal(t, int64(40+lineEndSize), e.Size())
 		_, ok = e.(*Object)
 		assert.True(t, ok)
 	}
 }
 
 func TestListRoot(t *testing.T) {
-	f, tidy := prepare(t)
-	defer tidy()
+	f := prepare(t)
 	testListRoot(t, f, false)
 }
 
 func TestListRootNoSlash(t *testing.T) {
-	f, tidy := prepare(t)
+	f := prepare(t)
 	f.(*Fs).opt.NoSlash = true
-	defer tidy()
 
 	testListRoot(t, f, true)
 }
 
 func TestListSubDir(t *testing.T) {
-	f, tidy := prepare(t)
-	defer tidy()
+	f := prepare(t)
 
 	entries, err := f.List(context.Background(), "three")
 	require.NoError(t, err)
@@ -141,20 +159,19 @@ func TestListSubDir(t *testing.T) {
 
 	e := entries[0]
 	assert.Equal(t, "three/underthree.txt", e.Remote())
-	assert.Equal(t, int64(9), e.Size())
+	assert.Equal(t, int64(8+lineEndSize), e.Size())
 	_, ok := e.(*Object)
 	assert.True(t, ok)
 }
 
 func TestNewObject(t *testing.T) {
-	f, tidy := prepare(t)
-	defer tidy()
+	f := prepare(t)
 
 	o, err := f.NewObject(context.Background(), "four/under four.txt")
 	require.NoError(t, err)
 
 	assert.Equal(t, "four/under four.txt", o.Remote())
-	assert.Equal(t, int64(9), o.Size())
+	assert.Equal(t, int64(8+lineEndSize), o.Size())
 	_, ok := o.(*Object)
 	assert.True(t, ok)
 
@@ -166,8 +183,7 @@ func TestNewObject(t *testing.T) {
 	require.NoError(t, err)
 	tFile := fi.ModTime()
 
-	dt, ok := fstest.CheckTimeEqualWithPrecision(tObj, tFile, time.Second)
-	assert.True(t, ok, fmt.Sprintf("%s: Modification time difference too big |%s| > %s (%s vs %s) (precision %s)", o.Remote(), dt, time.Second, tObj, tFile, time.Second))
+	fstest.AssertTimeEqualWithPrecision(t, o.Remote(), tFile, tObj, time.Second)
 
 	// check object not found
 	o, err = f.NewObject(context.Background(), "not found.txt")
@@ -176,32 +192,69 @@ func TestNewObject(t *testing.T) {
 }
 
 func TestOpen(t *testing.T) {
-	f, tidy := prepare(t)
-	defer tidy()
+	m := prepareServer(t)
 
-	o, err := f.NewObject(context.Background(), "four/under four.txt")
-	require.NoError(t, err)
+	for _, head := range []bool{false, true} {
+		if !head {
+			m.Set("no_head", "true")
+		}
+		f, err := NewFs(context.Background(), remoteName, "", m)
+		require.NoError(t, err)
 
-	// Test normal read
-	fd, err := o.Open(context.Background())
-	require.NoError(t, err)
-	data, err := ioutil.ReadAll(fd)
-	require.NoError(t, err)
-	require.NoError(t, fd.Close())
-	assert.Equal(t, "beetroot\n", string(data))
+		for _, rangeRead := range []bool{false, true} {
+			o, err := f.NewObject(context.Background(), "four/under four.txt")
+			require.NoError(t, err)
 
-	// Test with range request
-	fd, err = o.Open(context.Background(), &fs.RangeOption{Start: 1, End: 5})
-	require.NoError(t, err)
-	data, err = ioutil.ReadAll(fd)
-	require.NoError(t, err)
-	require.NoError(t, fd.Close())
-	assert.Equal(t, "eetro", string(data))
+			if !head {
+				// Test mod time is still indeterminate
+				tObj := o.ModTime(context.Background())
+				assert.Equal(t, time.Duration(0), time.Unix(0, 0).Sub(tObj))
+
+				// Test file size is still indeterminate
+				assert.Equal(t, int64(-1), o.Size())
+			}
+
+			var data []byte
+			if !rangeRead {
+				// Test normal read
+				fd, err := o.Open(context.Background())
+				require.NoError(t, err)
+				data, err = io.ReadAll(fd)
+				require.NoError(t, err)
+				require.NoError(t, fd.Close())
+				if lineEndSize == 2 {
+					assert.Equal(t, "beetroot\r\n", string(data))
+				} else {
+					assert.Equal(t, "beetroot\n", string(data))
+				}
+			} else {
+				// Test with range request
+				fd, err := o.Open(context.Background(), &fs.RangeOption{Start: 1, End: 5})
+				require.NoError(t, err)
+				data, err = io.ReadAll(fd)
+				require.NoError(t, err)
+				require.NoError(t, fd.Close())
+				assert.Equal(t, "eetro", string(data))
+			}
+
+			fi, err := os.Stat(filepath.Join(filesPath, "four", "under four.txt"))
+			require.NoError(t, err)
+			tFile := fi.ModTime()
+
+			// Test the time is always correct on the object after file open
+			tObj := o.ModTime(context.Background())
+			fstest.AssertTimeEqualWithPrecision(t, o.Remote(), tFile, tObj, time.Second)
+
+			if !rangeRead {
+				// Test the file size
+				assert.Equal(t, int64(len(data)), o.Size())
+			}
+		}
+	}
 }
 
 func TestMimeType(t *testing.T) {
-	f, tidy := prepare(t)
-	defer tidy()
+	f := prepare(t)
 
 	o, err := f.NewObject(context.Background(), "four/under four.txt")
 	require.NoError(t, err)
@@ -212,20 +265,18 @@ func TestMimeType(t *testing.T) {
 }
 
 func TestIsAFileRoot(t *testing.T) {
-	m, tidy := prepareServer(t)
-	defer tidy()
+	m := prepareServer(t)
 
-	f, err := NewFs(remoteName, "one%.txt", m)
+	f, err := NewFs(context.Background(), remoteName, "one%.txt", m)
 	assert.Equal(t, err, fs.ErrorIsFile)
 
 	testListRoot(t, f, false)
 }
 
 func TestIsAFileSubDir(t *testing.T) {
-	m, tidy := prepareServer(t)
-	defer tidy()
+	m := prepareServer(t)
 
-	f, err := NewFs(remoteName, "three/underthree.txt", m)
+	f, err := NewFs(context.Background(), remoteName, "three/underthree.txt", m)
 	assert.Equal(t, err, fs.ErrorIsFile)
 
 	entries, err := f.List(context.Background(), "")
@@ -237,7 +288,7 @@ func TestIsAFileSubDir(t *testing.T) {
 
 	e := entries[0]
 	assert.Equal(t, "underthree.txt", e.Remote())
-	assert.Equal(t, int64(9), e.Size())
+	assert.Equal(t, int64(8+lineEndSize), e.Size())
 	_, ok := e.(*Object)
 	assert.True(t, ok)
 }
@@ -353,4 +404,107 @@ func TestParseCaddy(t *testing.T) {
 		"v1.36-156-ge1f0e0f5-team-driveβ/",
 		"v1.36-22-g06ea13a-ssh-agentβ/",
 	})
+}
+
+func TestFsNoSlashRoots(t *testing.T) {
+	// Test Fs with roots that does not end with '/', the logic that
+	// decides if url is to be considered a file or directory, based
+	// on result from a HEAD request.
+
+	// Handler for faking HEAD responses with different status codes
+	headCount := 0
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "HEAD" {
+			headCount++
+			responseCode, err := strconv.Atoi(path.Base(r.URL.String()))
+			require.NoError(t, err)
+			if strings.HasPrefix(r.URL.String(), "/redirect/") {
+				var redir string
+				if strings.HasPrefix(r.URL.String(), "/redirect/file/") {
+					redir = "/redirected"
+				} else if strings.HasPrefix(r.URL.String(), "/redirect/dir/") {
+					redir = "/redirected/"
+				} else {
+					require.Fail(t, "Redirect test requests must start with '/redirect/file/' or '/redirect/dir/'")
+				}
+				http.Redirect(w, r, redir, responseCode)
+			} else {
+				http.Error(w, http.StatusText(responseCode), responseCode)
+			}
+		}
+	})
+
+	// Make the test server
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// Configure the remote
+	configfile.Install()
+	m := configmap.Simple{
+		"type": "http",
+		"url":  ts.URL,
+	}
+
+	// Test
+	for i, test := range []struct {
+		root   string
+		isFile bool
+	}{
+		// 2xx success
+		{"parent/200", true},
+		{"parent/204", true},
+
+		// 3xx redirection Redirect status 301, 302, 303, 307, 308
+		{"redirect/file/301", true}, // Request is redirected to "/redirected"
+		{"redirect/dir/301", false}, // Request is redirected to "/redirected/"
+		{"redirect/file/302", true}, // Request is redirected to "/redirected"
+		{"redirect/dir/302", false}, // Request is redirected to "/redirected/"
+		{"redirect/file/303", true}, // Request is redirected to "/redirected"
+		{"redirect/dir/303", false}, // Request is redirected to "/redirected/"
+
+		{"redirect/file/304", true}, // Not really a redirect, handled like 4xx errors (below)
+		{"redirect/file/305", true}, // Not really a redirect, handled like 4xx errors (below)
+		{"redirect/file/306", true}, // Not really a redirect, handled like 4xx errors (below)
+
+		{"redirect/file/307", true}, // Request is redirected to "/redirected"
+		{"redirect/dir/307", false}, // Request is redirected to "/redirected/"
+		{"redirect/file/308", true}, // Request is redirected to "/redirected"
+		{"redirect/dir/308", false}, // Request is redirected to "/redirected/"
+
+		// 4xx client errors
+		{"parent/403", true},  // Forbidden status (head request blocked)
+		{"parent/404", false}, // Not found status
+	} {
+		for _, noHead := range []bool{false, true} {
+			var isFile bool
+			if noHead {
+				m.Set("no_head", "true")
+				isFile = true
+			} else {
+				m.Set("no_head", "false")
+				isFile = test.isFile
+			}
+			headCount = 0
+			f, err := NewFs(context.Background(), remoteName, test.root, m)
+			if noHead {
+				assert.Equal(t, 0, headCount)
+			} else {
+				assert.Equal(t, 1, headCount)
+			}
+			if isFile {
+				assert.ErrorIs(t, err, fs.ErrorIsFile)
+			} else {
+				assert.NoError(t, err)
+			}
+			var endpoint string
+			if isFile {
+				parent, _ := path.Split(test.root)
+				endpoint = "/" + parent
+			} else {
+				endpoint = "/" + test.root + "/"
+			}
+			what := fmt.Sprintf("i=%d, root=%q, isFile=%v, noHead=%v", i, test.root, isFile, noHead)
+			assert.Equal(t, ts.URL+endpoint, f.String(), what)
+		}
+	}
 }

@@ -15,10 +15,10 @@ import (
 
 // Command line flags
 var (
-	// Invalid characters are not supported by some remotes, eg. Mailru.
+	// Invalid characters are not supported by some remotes, e.g. Mailru.
 	// We enable testing with invalid characters when -remote is not set, so
 	// chunker overlays a local directory, but invalid characters are disabled
-	// by default when -remote is set, eg. when test_all runs backend tests.
+	// by default when -remote is set, e.g. when test_all runs backend tests.
 	// You can still test with invalid characters using the below flag.
 	UseBadChars = flag.Bool("bad-chars", false, "Set to test bad characters in file names when -remote is set")
 )
@@ -35,10 +35,12 @@ func TestIntegration(t *testing.T) {
 			"MimeType",
 			"GetTier",
 			"SetTier",
+			"Metadata",
 		},
 		UnimplementableFsMethods: []string{
 			"PublicLink",
 			"OpenWriterAt",
+			"OpenChunkWriter",
 			"MergeDirs",
 			"DirCacheFlush",
 			"UserInfo",
@@ -53,6 +55,7 @@ func TestIntegration(t *testing.T) {
 			{Name: name, Key: "type", Value: "chunker"},
 			{Name: name, Key: "remote", Value: tempDir},
 		}
+		opt.QuickTestOK = true
 	}
 	fstests.Run(t, &opt)
 }

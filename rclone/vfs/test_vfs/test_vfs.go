@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math"
 	"math/rand"
@@ -27,7 +26,7 @@ var (
 	number     = flag.Int("n", 4, "Number of tests to run simultaneously")
 	iterations = flag.Int("i", 100, "Iterations of the test")
 	timeout    = flag.Duration("timeout", 10*time.Second, "Inactivity time to detect a deadlock")
-	testNumber int32
+	testNumber atomic.Int32
 )
 
 // Seed the random number generator
@@ -56,7 +55,7 @@ func NewTest(Dir string) *Test {
 		dir:    Dir,
 		name:   random.String(*nameLength),
 		isDir:  rand.Intn(2) == 0,
-		number: atomic.AddInt32(&testNumber, 1),
+		number: testNumber.Add(1),
 		timer:  time.NewTimer(*timeout),
 	}
 	width := int(math.Floor(math.Log10(float64(*number)))) + 1
@@ -112,7 +111,7 @@ func (t *Test) errorf(format string, a ...interface{}) {
 // list test
 func (t *Test) list() {
 	t.logf("list")
-	fis, err := ioutil.ReadDir(t.dir)
+	fis, err := os.ReadDir(t.dir)
 	if err != nil {
 		t.errorf("%s: failed to read directory: %v", t.dir, err)
 		return
@@ -296,7 +295,7 @@ func main() {
 		log.Fatalf("%s: Syntax [opts] <directory>", os.Args[0])
 	}
 	dir := args[0]
-	_ = os.MkdirAll(dir, 0777)
+	_ = file.MkdirAll(dir, 0777)
 
 	var (
 		wg   sync.WaitGroup

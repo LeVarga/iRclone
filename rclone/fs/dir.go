@@ -12,9 +12,12 @@ type Dir struct {
 	size    int64     // size of directory and contents or -1 if unknown
 	items   int64     // number of objects or -1 for unknown
 	id      string    // optional ID
+	parent  string    // optional parent directory ID
 }
 
 // NewDir creates an unspecialized Directory object
+//
+// If the modTime is unknown pass in time.Time{}
 func NewDir(remote string, modTime time.Time) *Dir {
 	return &Dir{
 		remote:  remote,
@@ -62,13 +65,26 @@ func (d *Dir) SetID(id string) *Dir {
 	return d
 }
 
+// ParentID returns the IDs of the Dir parent if known
+func (d *Dir) ParentID() string {
+	return d.parent
+}
+
+// SetParentID sets the optional parent ID of the Dir
+func (d *Dir) SetParentID(parent string) *Dir {
+	d.parent = parent
+	return d
+}
+
 // ModTime returns the modification date of the file
-// It should return a best guess if one isn't available
+//
+// If one isn't available it returns the configured --default-dir-time
 func (d *Dir) ModTime(ctx context.Context) time.Time {
 	if !d.modTime.IsZero() {
 		return d.modTime
 	}
-	return time.Now()
+	ci := GetConfig(ctx)
+	return time.Time(ci.DefaultTime)
 }
 
 // Size returns the size of the file

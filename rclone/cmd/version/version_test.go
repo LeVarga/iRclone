@@ -1,7 +1,6 @@
 package version
 
 import (
-	"io/ioutil"
 	"os"
 	"runtime"
 	"testing"
@@ -13,7 +12,7 @@ import (
 
 func TestVersionWorksWithoutAccessibleConfigFile(t *testing.T) {
 	// create temp config file
-	tempFile, err := ioutil.TempFile("", "unreadable_config.conf")
+	tempFile, err := os.CreateTemp("", "unreadable_config.conf")
 	assert.NoError(t, err)
 	path := tempFile.Name()
 	defer func() {
@@ -26,12 +25,12 @@ func TestVersionWorksWithoutAccessibleConfigFile(t *testing.T) {
 	}
 	// re-wire
 	oldOsStdout := os.Stdout
-	oldConfigPath := config.ConfigPath
-	config.ConfigPath = path
+	oldConfigPath := config.GetConfigPath()
+	assert.NoError(t, config.SetConfigPath(path))
 	os.Stdout = nil
 	defer func() {
 		os.Stdout = oldOsStdout
-		config.ConfigPath = oldConfigPath
+		assert.NoError(t, config.SetConfigPath(oldConfigPath))
 	}()
 
 	cmd.Root.SetArgs([]string{"version"})

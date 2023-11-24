@@ -1,264 +1,183 @@
+// Package mountlib provides the mount command.
 package mountlib
 
 import (
-	"io"
+	"context"
+	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/cmd"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/flags"
+	"github.com/rclone/rclone/fs/rc"
+	"github.com/rclone/rclone/lib/atexit"
+	"github.com/rclone/rclone/lib/daemonize"
 	"github.com/rclone/rclone/vfs"
+	"github.com/rclone/rclone/vfs/vfscommon"
 	"github.com/rclone/rclone/vfs/vfsflags"
+
+	sysdnotify "github.com/iguanesolutions/go-systemd/v5/notify"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
-// Options set by command line flags
-var (
-	DebugFUSE                        = false
-	AllowNonEmpty                    = false
-	AllowRoot                        = false
-	AllowOther                       = false
-	DefaultPermissions               = false
-	WritebackCache                   = false
-	Daemon                           = false
-	MaxReadAhead       fs.SizeSuffix = 128 * 1024
+// Options for creating the mount
+type Options struct {
+	DebugFUSE          bool
+	AllowNonEmpty      bool
+	AllowRoot          bool
+	AllowOther         bool
+	DefaultPermissions bool
+	WritebackCache     bool
+	Daemon             bool
+	DaemonWait         time.Duration // time to wait for ready mount from daemon, maximum on Linux or constant on macOS/BSD
+	MaxReadAhead       fs.SizeSuffix
 	ExtraOptions       []string
 	ExtraFlags         []string
-	AttrTimeout        = 1 * time.Second // how long the kernel caches attribute for
+	AttrTimeout        time.Duration // how long the kernel caches attribute for
+	DeviceName         string
 	VolumeName         string
-	NoAppleDouble      = true        // use noappledouble by default
-	NoAppleXattr       = false       // do not use noapplexattr by default
+	NoAppleDouble      bool
+	NoAppleXattr       bool
 	DaemonTimeout      time.Duration // OSXFUSE only
+	AsyncRead          bool
+	NetworkMode        bool // Windows only
+	CaseInsensitive    fs.Tristate
+}
+
+// DefaultOpt is the default values for creating the mount
+var DefaultOpt = Options{
+	MaxReadAhead:  128 * 1024,
+	AttrTimeout:   1 * time.Second, // how long the kernel caches attribute for
+	NoAppleDouble: true,            // use noappledouble by default
+	NoAppleXattr:  false,           // do not use noapplexattr by default
+	AsyncRead:     true,            // do async reads by default
+}
+
+type (
+	// UnmountFn is called to unmount the file system
+	UnmountFn func() error
+	// MountFn is called to mount the file system
+	MountFn func(VFS *vfs.VFS, mountpoint string, opt *Options) (<-chan error, func() error, error)
 )
+
+// MountPoint represents a mount with options and runtime state
+type MountPoint struct {
+	MountPoint string
+	MountedOn  time.Time
+	MountOpt   Options
+	VFSOpt     vfscommon.Options
+	Fs         fs.Fs
+	VFS        *vfs.VFS
+	MountFn    MountFn
+	UnmountFn  UnmountFn
+	ErrChan    <-chan error
+}
+
+// NewMountPoint makes a new mounting structure
+func NewMountPoint(mount MountFn, mountPoint string, f fs.Fs, mountOpt *Options, vfsOpt *vfscommon.Options) *MountPoint {
+	return &MountPoint{
+		MountFn:    mount,
+		MountPoint: mountPoint,
+		Fs:         f,
+		MountOpt:   *mountOpt,
+		VFSOpt:     *vfsOpt,
+	}
+}
 
 // Global constants
 const (
-	MaxLeafSize = 4095 // don't pass file names longer than this
+	MaxLeafSize = 1024 // don't pass file names longer than this
 )
 
 func init() {
-	// DaemonTimeout defaults to non zero for macOS
-	if runtime.GOOS == "darwin" {
-		DaemonTimeout = 15 * time.Minute
+	switch runtime.GOOS {
+	case "darwin":
+		// DaemonTimeout defaults to non-zero for macOS
+		// (this is a macOS specific kernel option unrelated to DaemonWait)
+		DefaultOpt.DaemonTimeout = 10 * time.Minute
 	}
+
+	switch runtime.GOOS {
+	case "linux":
+		// Linux provides /proc/mounts to check mount status
+		// so --daemon-wait means *maximum* time to wait
+		DefaultOpt.DaemonWait = 60 * time.Second
+	case "darwin", "openbsd", "freebsd", "netbsd":
+		// On BSD we can't check mount status yet
+		// so --daemon-wait is just a *constant* delay
+		DefaultOpt.DaemonWait = 5 * time.Second
+	}
+
+	// Opt must be assigned in the init block to ensure changes really get in
+	Opt = DefaultOpt
 }
 
-// Check is folder is empty
-func checkMountEmpty(mountpoint string) error {
-	fp, fpErr := os.Open(mountpoint)
+// Opt contains options set by command line flags
+var Opt Options
 
-	if fpErr != nil {
-		return errors.Wrap(fpErr, "Can not open: "+mountpoint)
-	}
-	defer fs.CheckClose(fp, &fpErr)
-
-	_, fpErr = fp.Readdirnames(1)
-
-	// directory is not empty
-	if fpErr != io.EOF {
-		var e error
-		var errorMsg = "Directory is not empty: " + mountpoint + " If you want to mount it anyway use: --allow-non-empty option"
-		if fpErr == nil {
-			e = errors.New(errorMsg)
-		} else {
-			e = errors.Wrap(fpErr, errorMsg)
-		}
-		return e
-	}
-	return nil
-}
-
-// Check the root doesn't overlap the mountpoint
-func checkMountpointOverlap(root, mountpoint string) error {
-	abs := func(x string) string {
-		if absX, err := filepath.EvalSymlinks(x); err == nil {
-			x = absX
-		}
-		if absX, err := filepath.Abs(x); err == nil {
-			x = absX
-		}
-		x = filepath.ToSlash(x)
-		if !strings.HasSuffix(x, "/") {
-			x += "/"
-		}
-		return x
-	}
-	rootAbs, mountpointAbs := abs(root), abs(mountpoint)
-	if strings.HasPrefix(rootAbs, mountpointAbs) || strings.HasPrefix(mountpointAbs, rootAbs) {
-		return errors.Errorf("mount point %q and directory to be mounted %q mustn't overlap", mountpoint, root)
-	}
-	return nil
+// AddFlags adds the non filing system specific flags to the command
+func AddFlags(flagSet *pflag.FlagSet) {
+	rc.AddOption("mount", &Opt)
+	flags.BoolVarP(flagSet, &Opt.DebugFUSE, "debug-fuse", "", Opt.DebugFUSE, "Debug the FUSE internals - needs -v", "Mount")
+	flags.DurationVarP(flagSet, &Opt.AttrTimeout, "attr-timeout", "", Opt.AttrTimeout, "Time for which file/directory attributes are cached", "Mount")
+	flags.StringArrayVarP(flagSet, &Opt.ExtraOptions, "option", "o", []string{}, "Option for libfuse/WinFsp (repeat if required)", "Mount")
+	flags.StringArrayVarP(flagSet, &Opt.ExtraFlags, "fuse-flag", "", []string{}, "Flags or arguments to be passed direct to libfuse/WinFsp (repeat if required)", "Mount")
+	// Non-Windows only
+	flags.BoolVarP(flagSet, &Opt.Daemon, "daemon", "", Opt.Daemon, "Run mount in background and exit parent process (as background output is suppressed, use --log-file with --log-format=pid,... to monitor) (not supported on Windows)", "Mount")
+	flags.DurationVarP(flagSet, &Opt.DaemonTimeout, "daemon-timeout", "", Opt.DaemonTimeout, "Time limit for rclone to respond to kernel (not supported on Windows)", "Mount")
+	flags.BoolVarP(flagSet, &Opt.DefaultPermissions, "default-permissions", "", Opt.DefaultPermissions, "Makes kernel enforce access control based on the file mode (not supported on Windows)", "Mount")
+	flags.BoolVarP(flagSet, &Opt.AllowNonEmpty, "allow-non-empty", "", Opt.AllowNonEmpty, "Allow mounting over a non-empty directory (not supported on Windows)", "Mount")
+	flags.BoolVarP(flagSet, &Opt.AllowRoot, "allow-root", "", Opt.AllowRoot, "Allow access to root user (not supported on Windows)", "Mount")
+	flags.BoolVarP(flagSet, &Opt.AllowOther, "allow-other", "", Opt.AllowOther, "Allow access to other users (not supported on Windows)", "Mount")
+	flags.BoolVarP(flagSet, &Opt.AsyncRead, "async-read", "", Opt.AsyncRead, "Use asynchronous reads (not supported on Windows)", "Mount")
+	flags.FVarP(flagSet, &Opt.MaxReadAhead, "max-read-ahead", "", "The number of bytes that can be prefetched for sequential reads (not supported on Windows)", "Mount")
+	flags.BoolVarP(flagSet, &Opt.WritebackCache, "write-back-cache", "", Opt.WritebackCache, "Makes kernel buffer writes before sending them to rclone (without this, writethrough caching is used) (not supported on Windows)", "Mount")
+	flags.StringVarP(flagSet, &Opt.DeviceName, "devname", "", Opt.DeviceName, "Set the device name - default is remote:path", "Mount")
+	flags.FVarP(flagSet, &Opt.CaseInsensitive, "mount-case-insensitive", "", "Tell the OS the mount is case insensitive (true) or sensitive (false) regardless of the backend (auto)", "Mount")
+	// Windows and OSX
+	flags.StringVarP(flagSet, &Opt.VolumeName, "volname", "", Opt.VolumeName, "Set the volume name (supported on Windows and OSX only)", "Mount")
+	// OSX only
+	flags.BoolVarP(flagSet, &Opt.NoAppleDouble, "noappledouble", "", Opt.NoAppleDouble, "Ignore Apple Double (._) and .DS_Store files (supported on OSX only)", "Mount")
+	flags.BoolVarP(flagSet, &Opt.NoAppleXattr, "noapplexattr", "", Opt.NoAppleXattr, "Ignore all \"com.apple.*\" extended attributes (supported on OSX only)", "Mount")
+	// Windows only
+	flags.BoolVarP(flagSet, &Opt.NetworkMode, "network-mode", "", Opt.NetworkMode, "Mount as remote network drive, instead of fixed disk drive (supported on Windows only)", "Mount")
+	// Unix only
+	flags.DurationVarP(flagSet, &Opt.DaemonWait, "daemon-wait", "", Opt.DaemonWait, "Time to wait for ready mount from daemon (maximum time on Linux, constant sleep time on OSX/BSD) (not supported on Windows)", "Mount")
 }
 
 // NewMountCommand makes a mount command with the given name and Mount function
-func NewMountCommand(commandName string, Mount func(f fs.Fs, mountpoint string) error) *cobra.Command {
+func NewMountCommand(commandName string, hidden bool, mount MountFn) *cobra.Command {
 	var commandDefinition = &cobra.Command{
-		Use:   commandName + " remote:path /path/to/mountpoint",
-		Short: `Mount the remote as file system on a mountpoint.`,
-		Long: `
-rclone ` + commandName + ` allows Linux, FreeBSD, macOS and Windows to
-mount any of Rclone's cloud storage systems as a file system with
-FUSE.
-
-First set up your remote using ` + "`rclone config`" + `.  Check it works with ` + "`rclone ls`" + ` etc.
-
-Start the mount like this
-
-    rclone ` + commandName + ` remote:path/to/files /path/to/local/mount
-
-Or on Windows like this where X: is an unused drive letter
-
-    rclone ` + commandName + ` remote:path/to/files X:
-
-When the program ends, either via Ctrl+C or receiving a SIGINT or SIGTERM signal,
-the mount is automatically stopped.
-
-The umount operation can fail, for example when the mountpoint is busy.
-When that happens, it is the user's responsibility to stop the mount manually with
-
-    # Linux
-    fusermount -u /path/to/local/mount
-    # OS X
-    umount /path/to/local/mount
-
-### Installing on Windows
-
-To run rclone ` + commandName + ` on Windows, you will need to
-download and install [WinFsp](http://www.secfs.net/winfsp/).
-
-WinFsp is an [open source](https://github.com/billziss-gh/winfsp)
-Windows File System Proxy which makes it easy to write user space file
-systems for Windows.  It provides a FUSE emulation layer which rclone
-uses combination with
-[cgofuse](https://github.com/billziss-gh/cgofuse).  Both of these
-packages are by Bill Zissimopoulos who was very helpful during the
-implementation of rclone ` + commandName + ` for Windows.
-
-#### Windows caveats
-
-Note that drives created as Administrator are not visible by other
-accounts (including the account that was elevated as
-Administrator). So if you start a Windows drive from an Administrative
-Command Prompt and then try to access the same drive from Explorer
-(which does not run as Administrator), you will not be able to see the
-new drive.
-
-The easiest way around this is to start the drive from a normal
-command prompt. It is also possible to start a drive from the SYSTEM
-account (using [the WinFsp.Launcher
-infrastructure](https://github.com/billziss-gh/winfsp/wiki/WinFsp-Service-Architecture))
-which creates drives accessible for everyone on the system or
-alternatively using [the nssm service manager](https://nssm.cc/usage).
-
-### Limitations
-
-Without the use of "--vfs-cache-mode" this can only write files
-sequentially, it can only seek when reading.  This means that many
-applications won't work with their files on an rclone mount without
-"--vfs-cache-mode writes" or "--vfs-cache-mode full".  See the [File
-Caching](#file-caching) section for more info.
-
-The bucket based remotes (eg Swift, S3, Google Compute Storage, B2,
-Hubic) do not support the concept of empty directories, so empty
-directories will have a tendency to disappear once they fall out of
-the directory cache.
-
-Only supported on Linux, FreeBSD, OS X and Windows at the moment.
-
-### rclone ` + commandName + ` vs rclone sync/copy
-
-File systems expect things to be 100% reliable, whereas cloud storage
-systems are a long way from 100% reliable. The rclone sync/copy
-commands cope with this with lots of retries.  However rclone ` + commandName + `
-can't use retries in the same way without making local copies of the
-uploads. Look at the [file caching](#file-caching)
-for solutions to make ` + commandName + ` more reliable.
-
-### Attribute caching
-
-You can use the flag --attr-timeout to set the time the kernel caches
-the attributes (size, modification time etc) for directory entries.
-
-The default is "1s" which caches files just long enough to avoid
-too many callbacks to rclone from the kernel.
-
-In theory 0s should be the correct value for filesystems which can
-change outside the control of the kernel. However this causes quite a
-few problems such as
-[rclone using too much memory](https://github.com/rclone/rclone/issues/2157),
-[rclone not serving files to samba](https://forum.rclone.org/t/rclone-1-39-vs-1-40-mount-issue/5112)
-and [excessive time listing directories](https://github.com/rclone/rclone/issues/2095#issuecomment-371141147).
-
-The kernel can cache the info about a file for the time given by
-"--attr-timeout". You may see corruption if the remote file changes
-length during this window.  It will show up as either a truncated file
-or a file with garbage on the end.  With "--attr-timeout 1s" this is
-very unlikely but not impossible.  The higher you set "--attr-timeout"
-the more likely it is.  The default setting of "1s" is the lowest
-setting which mitigates the problems above.
-
-If you set it higher ('10s' or '1m' say) then the kernel will call
-back to rclone less often making it more efficient, however there is
-more chance of the corruption issue above.
-
-If files don't change on the remote outside of the control of rclone
-then there is no chance of corruption.
-
-This is the same as setting the attr_timeout option in mount.fuse.
-
-### Filters
-
-Note that all the rclone filters can be used to select a subset of the
-files to be visible in the mount.
-
-### systemd
-
-When running rclone ` + commandName + ` as a systemd service, it is possible
-to use Type=notify. In this case the service will enter the started state
-after the mountpoint has been successfully set up.
-Units having the rclone ` + commandName + ` service specified as a requirement
-will see all files and folders immediately in this mode.
-
-### chunked reading ###
-
---vfs-read-chunk-size will enable reading the source objects in parts.
-This can reduce the used download quota for some remotes by requesting only chunks
-from the remote that are actually read at the cost of an increased number of requests.
-
-When --vfs-read-chunk-size-limit is also specified and greater than --vfs-read-chunk-size,
-the chunk size for each open file will get doubled for each chunk read, until the
-specified value is reached. A value of -1 will disable the limit and the chunk size will
-grow indefinitely.
-
-With --vfs-read-chunk-size 100M and --vfs-read-chunk-size-limit 0 the following
-parts will be downloaded: 0-100M, 100M-200M, 200M-300M, 300M-400M and so on.
-When --vfs-read-chunk-size-limit 500M is specified, the result would be
-0-100M, 100M-300M, 300M-700M, 700M-1200M, 1200M-1700M and so on.
-
-Chunked reading will only work with --vfs-cache-mode < full, as the file will always
-be copied to the vfs cache before opening with --vfs-cache-mode full.
-` + vfs.Help,
+		Use:    commandName + " remote:path /path/to/mountpoint",
+		Hidden: hidden,
+		Short:  `Mount the remote as file system on a mountpoint.`,
+		Long:   strings.ReplaceAll(strings.ReplaceAll(mountHelp, "|", "`"), "@", commandName) + vfs.Help,
+		Annotations: map[string]string{
+			"versionIntroduced": "v1.33",
+			"groups":            "Filter",
+		},
 		Run: func(command *cobra.Command, args []string) {
 			cmd.CheckArgs(2, 2, command, args)
 
-			if Daemon {
+			if fs.GetConfig(context.Background()).UseListR {
+				fs.Logf(nil, "--fast-list does nothing on a mount")
+			}
+
+			if Opt.Daemon {
 				config.PassConfigKeyForDaemonization = true
 			}
 
-			mountpoint := args[1]
-			fdst := cmd.NewFsDir(args)
-			if fdst.Name() == "" || fdst.Name() == "local" {
-				err := checkMountpointOverlap(fdst.Root(), mountpoint)
-				if err != nil {
-					log.Fatalf("Fatal error: %v", err)
-				}
+			if os.Getenv("PATH") == "" && runtime.GOOS != "windows" {
+				// PATH can be unset when running under Autofs or Systemd mount
+				fs.Debugf(nil, "Using fallback PATH to run fusermount")
+				_ = os.Setenv("PATH", "/bin:/usr/bin")
 			}
 
 			// Show stats if the user has specifically requested them
@@ -266,33 +185,42 @@ be copied to the vfs cache before opening with --vfs-cache-mode full.
 				defer cmd.StartStats()()
 			}
 
-			// Skip checkMountEmpty if --allow-non-empty flag is used or if
-			// the Operating System is Windows
-			if !AllowNonEmpty && runtime.GOOS != "windows" {
-				err := checkMountEmpty(mountpoint)
+			mnt := NewMountPoint(mount, args[1], cmd.NewFsDir(args), &Opt, &vfsflags.Opt)
+			daemon, err := mnt.Mount()
+
+			// Wait for foreground mount, if any...
+			if daemon == nil {
+				if err == nil {
+					err = mnt.Wait()
+				}
 				if err != nil {
 					log.Fatalf("Fatal error: %v", err)
 				}
+				return
 			}
 
-			// Work out the volume name, removing special
-			// characters from it if necessary
-			if VolumeName == "" {
-				VolumeName = fdst.Name() + ":" + fdst.Root()
+			// Wait for daemon, if any...
+			killOnce := sync.Once{}
+			killDaemon := func(reason string) {
+				killOnce.Do(func() {
+					if err := daemon.Signal(os.Interrupt); err != nil {
+						fs.Errorf(nil, "%s. Failed to terminate daemon pid %d: %v", reason, daemon.Pid, err)
+						return
+					}
+					fs.Debugf(nil, "%s. Terminating daemon pid %d", reason, daemon.Pid)
+				})
 			}
-			VolumeName = strings.Replace(VolumeName, ":", " ", -1)
-			VolumeName = strings.Replace(VolumeName, "/", " ", -1)
-			VolumeName = strings.TrimSpace(VolumeName)
 
-			// Start background task if --background is specified
-			if Daemon {
-				daemonized := startBackgroundMode()
-				if daemonized {
-					return
+			if err == nil && Opt.DaemonWait > 0 {
+				handle := atexit.Register(func() {
+					killDaemon("Got interrupt")
+				})
+				err = WaitMountReady(mnt.MountPoint, Opt.DaemonWait)
+				if err != nil {
+					killDaemon("Daemon timed out")
 				}
+				atexit.Unregister(handle)
 			}
-
-			err := Mount(fdst, mountpoint)
 			if err != nil {
 				log.Fatalf("Fatal error: %v", err)
 			}
@@ -304,51 +232,95 @@ be copied to the vfs cache before opening with --vfs-cache-mode full.
 
 	// Add flags
 	cmdFlags := commandDefinition.Flags()
-	flags.BoolVarP(cmdFlags, &DebugFUSE, "debug-fuse", "", DebugFUSE, "Debug the FUSE internals - needs -v.")
-	// mount options
-	flags.BoolVarP(cmdFlags, &AllowNonEmpty, "allow-non-empty", "", AllowNonEmpty, "Allow mounting over a non-empty directory.")
-	flags.BoolVarP(cmdFlags, &AllowRoot, "allow-root", "", AllowRoot, "Allow access to root user.")
-	flags.BoolVarP(cmdFlags, &AllowOther, "allow-other", "", AllowOther, "Allow access to other users.")
-	flags.BoolVarP(cmdFlags, &DefaultPermissions, "default-permissions", "", DefaultPermissions, "Makes kernel enforce access control based on the file mode.")
-	flags.BoolVarP(cmdFlags, &WritebackCache, "write-back-cache", "", WritebackCache, "Makes kernel buffer writes before sending them to rclone. Without this, writethrough caching is used.")
-	flags.FVarP(cmdFlags, &MaxReadAhead, "max-read-ahead", "", "The number of bytes that can be prefetched for sequential reads.")
-	flags.DurationVarP(cmdFlags, &AttrTimeout, "attr-timeout", "", AttrTimeout, "Time for which file/directory attributes are cached.")
-	flags.StringArrayVarP(cmdFlags, &ExtraOptions, "option", "o", []string{}, "Option for libfuse/WinFsp. Repeat if required.")
-	flags.StringArrayVarP(cmdFlags, &ExtraFlags, "fuse-flag", "", []string{}, "Flags or arguments to be passed direct to libfuse/WinFsp. Repeat if required.")
-	flags.BoolVarP(cmdFlags, &Daemon, "daemon", "", Daemon, "Run mount as a daemon (background mode).")
-	flags.StringVarP(cmdFlags, &VolumeName, "volname", "", VolumeName, "Set the volume name (not supported by all OSes).")
-	flags.DurationVarP(cmdFlags, &DaemonTimeout, "daemon-timeout", "", DaemonTimeout, "Time limit for rclone to respond to kernel (not supported by all OSes).")
-
-	if runtime.GOOS == "darwin" {
-		flags.BoolVarP(cmdFlags, &NoAppleDouble, "noappledouble", "", NoAppleDouble, "Sets the OSXFUSE option noappledouble.")
-		flags.BoolVarP(cmdFlags, &NoAppleXattr, "noapplexattr", "", NoAppleXattr, "Sets the OSXFUSE option noapplexattr.")
-	}
-
-	// Add in the generic flags
+	AddFlags(cmdFlags)
 	vfsflags.AddFlags(cmdFlags)
 
 	return commandDefinition
 }
 
-// ClipBlocks clips the blocks pointed to to the OS max
-func ClipBlocks(b *uint64) {
-	var max uint64
-	switch runtime.GOOS {
-	case "windows":
-		if runtime.GOARCH == "386" {
-			max = (1 << 32) - 1
-		} else {
-			max = (1 << 43) - 1
+// Mount the remote at mountpoint
+func (m *MountPoint) Mount() (daemon *os.Process, err error) {
+
+	// Ensure sensible defaults
+	m.SetVolumeName(m.MountOpt.VolumeName)
+	m.SetDeviceName(m.MountOpt.DeviceName)
+
+	// Start background task if --daemon is specified
+	if m.MountOpt.Daemon {
+		daemon, err = daemonize.StartDaemon(os.Args)
+		if daemon != nil || err != nil {
+			return daemon, err
 		}
-	case "darwin":
-		// OSX FUSE only supports 32 bit number of blocks
-		// https://github.com/osxfuse/osxfuse/issues/396
-		max = (1 << 32) - 1
-	default:
-		// no clipping
-		return
 	}
-	if *b > max {
-		*b = max
+
+	m.VFS = vfs.New(m.Fs, &m.VFSOpt)
+
+	m.ErrChan, m.UnmountFn, err = m.MountFn(m.VFS, m.MountPoint, &m.MountOpt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to mount FUSE fs: %w", err)
 	}
+	m.MountedOn = time.Now()
+	return nil, nil
+}
+
+// Wait for mount end
+func (m *MountPoint) Wait() error {
+	// Unmount on exit
+	var finaliseOnce sync.Once
+	finalise := func() {
+		finaliseOnce.Do(func() {
+			_ = sysdnotify.Stopping()
+			// Unmount only if directory was mounted by rclone, e.g. don't unmount autofs hooks.
+			if err := CheckMountReady(m.MountPoint); err != nil {
+				fs.Debugf(m.MountPoint, "Unmounted externally. Just exit now.")
+				return
+			}
+			if err := m.Unmount(); err != nil {
+				fs.Errorf(m.MountPoint, "Failed to unmount: %v", err)
+			} else {
+				fs.Errorf(m.MountPoint, "Unmounted rclone mount")
+			}
+		})
+	}
+	fnHandle := atexit.Register(finalise)
+	defer atexit.Unregister(fnHandle)
+
+	// Notify systemd
+	if err := sysdnotify.Ready(); err != nil {
+		return fmt.Errorf("failed to notify systemd: %w", err)
+	}
+
+	// Reload VFS cache on SIGHUP
+	sigHup := make(chan os.Signal, 1)
+	NotifyOnSigHup(sigHup)
+	var err error
+
+	waiting := true
+	for waiting {
+		select {
+		// umount triggered outside the app
+		case err = <-m.ErrChan:
+			waiting = false
+		// user sent SIGHUP to clear the cache
+		case <-sigHup:
+			root, err := m.VFS.Root()
+			if err != nil {
+				fs.Errorf(m.VFS.Fs(), "Error reading root: %v", err)
+			} else {
+				root.ForgetAll()
+			}
+		}
+	}
+
+	finalise()
+
+	if err != nil {
+		return fmt.Errorf("failed to umount FUSE fs: %w", err)
+	}
+	return nil
+}
+
+// Unmount the specified mountpoint
+func (m *MountPoint) Unmount() (err error) {
+	return m.UnmountFn()
 }

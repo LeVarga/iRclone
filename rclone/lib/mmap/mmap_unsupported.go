@@ -1,6 +1,7 @@
 // Fallback Alloc and Free for unsupported OSes
 
-// +build plan9
+//go:build plan9 || js
+// +build plan9 js
 
 package mmap
 

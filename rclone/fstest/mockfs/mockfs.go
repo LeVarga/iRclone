@@ -1,3 +1,4 @@
+// Package mockfs provides mock Fs for testing.
 package mockfs
 
 import (
@@ -9,8 +10,23 @@ import (
 	"time"
 
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/hash"
 )
+
+// Register with Fs
+func Register() {
+	fs.Register(&fs.RegInfo{
+		Name:        "mockfs",
+		Description: "Mock FS",
+		NewFs:       NewFs,
+		Options: []fs.Option{{
+			Name:     "potato",
+			Help:     "Does it have a potato?.",
+			Required: true,
+		}},
+	})
+}
 
 // Fs is a minimal mock Fs
 type Fs struct {
@@ -18,19 +34,20 @@ type Fs struct {
 	root     string        // The root directory (OS path)
 	features *fs.Features  // optional features
 	rootDir  fs.DirEntries // directory listing of root
+	hashes   hash.Set      // which hashes we support
 }
 
 // ErrNotImplemented is returned by unimplemented methods
 var ErrNotImplemented = errors.New("not implemented")
 
 // NewFs returns a new mock Fs
-func NewFs(name, root string) *Fs {
+func NewFs(ctx context.Context, name string, root string, config configmap.Mapper) (fs.Fs, error) {
 	f := &Fs{
 		name: name,
 		root: root,
 	}
-	f.features = (&fs.Features{}).Fill(f)
-	return f
+	f.features = (&fs.Features{}).Fill(ctx, f)
+	return f, nil
 }
 
 // AddObject adds an Object for List to return
@@ -66,7 +83,12 @@ func (f *Fs) Precision() time.Duration {
 
 // Hashes returns the supported hash types of the filesystem
 func (f *Fs) Hashes() hash.Set {
-	return hash.NewHashSet()
+	return f.hashes
+}
+
+// SetHashes sets the hashes that this supports
+func (f *Fs) SetHashes(hashes hash.Set) {
+	f.hashes = hashes
 }
 
 // Features returns the optional features of this Fs

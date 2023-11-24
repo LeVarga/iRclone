@@ -6,13 +6,13 @@ import (
 	"testing"
 
 	"github.com/rclone/rclone/fstest"
+	"github.com/rclone/rclone/vfs/vfscommon"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestCaseSensitivity(t *testing.T) {
 	r := fstest.NewRun(t)
-	defer r.Finalise()
 
 	if r.Fremote.Features().CaseInsensitive {
 		t.Skip("Can't test case sensitivity - this remote is officially not case-sensitive")
@@ -22,7 +22,7 @@ func TestCaseSensitivity(t *testing.T) {
 	ctx := context.Background()
 	file1 := r.WriteObject(ctx, "FiLeA", "data1", t1)
 	file2 := r.WriteObject(ctx, "FiLeB", "data2", t2)
-	fstest.CheckItems(t, r.Fremote, file1, file2)
+	r.CheckRemoteItems(t, file1, file2)
 
 	// Create file3 with name differing from file2 name only by case.
 	// On a case-Sensitive remote this will be a separate file.
@@ -32,13 +32,15 @@ func TestCaseSensitivity(t *testing.T) {
 	file3 := r.WriteObject(ctx, "FilEb", "data3", t3)
 
 	// Create a case-Sensitive and case-INsensitive VFS
-	optCS := DefaultOpt
+	optCS := vfscommon.DefaultOpt
 	optCS.CaseInsensitive = false
 	vfsCS := New(r.Fremote, &optCS)
+	defer cleanupVFS(t, vfsCS)
 
-	optCI := DefaultOpt
+	optCI := vfscommon.DefaultOpt
 	optCI.CaseInsensitive = true
 	vfsCI := New(r.Fremote, &optCI)
+	defer cleanupVFS(t, vfsCI)
 
 	// Run basic checks that must pass on VFS of any type.
 	assertFileDataVFS(t, vfsCI, "FiLeA", "data1")
@@ -62,7 +64,7 @@ func TestCaseSensitivity(t *testing.T) {
 	}
 
 	// Continue with test as the underlying remote is fully case-Sensitive.
-	fstest.CheckItems(t, r.Fremote, file1, file2, file3)
+	r.CheckRemoteItems(t, file1, file2, file3)
 
 	// See how VFS handles case-INsensitive flag
 	assertFileDataVFS(t, vfsCI, "FiLeA", "data1")

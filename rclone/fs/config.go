@@ -1,17 +1,19 @@
 package fs
 
 import (
+	"context"
+	"errors"
 	"net"
+	"os"
+	"strconv"
 	"strings"
 	"time"
-
-	"github.com/pkg/errors"
 )
 
 // Global
 var (
-	// Config is the global config
-	Config = NewConfig()
+	// globalConfig for rclone
+	globalConfig = NewConfig()
 
 	// Read a value from the config file
 	//
@@ -27,82 +29,125 @@ var (
 		return errors.New("no config file set handler")
 	}
 
-	// CountError counts an error.  If any errors have been
-	// counted then it will exit with a non zero error code.
+	// Check if the config file has the named section
 	//
 	// This is a function pointer to decouple the config
 	// implementation from the fs
-	CountError = func(err error) {}
+	ConfigFileHasSection = func(section string) bool { return false }
+
+	// CountError counts an error.  If any errors have been
+	// counted then rclone will exit with a non zero error code.
+	//
+	// This is a function pointer to decouple the config
+	// implementation from the fs
+	CountError = func(err error) error { return err }
 
 	// ConfigProvider is the config key used for provider options
 	ConfigProvider = "provider"
+
+	// ConfigEdit is the config key used to show we wish to edit existing entries
+	ConfigEdit = "config_fs_edit"
 )
 
 // ConfigInfo is filesystem config options
 type ConfigInfo struct {
-	LogLevel               LogLevel
-	StatsLogLevel          LogLevel
-	UseJSONLog             bool
-	DryRun                 bool
-	CheckSum               bool
-	SizeOnly               bool
-	IgnoreTimes            bool
-	IgnoreExisting         bool
-	IgnoreErrors           bool
-	ModifyWindow           time.Duration
-	Checkers               int
-	Transfers              int
-	ConnectTimeout         time.Duration // Connect timeout
-	Timeout                time.Duration // Data channel timeout
-	Dump                   DumpFlags
-	InsecureSkipVerify     bool // Skip server certificate verification
-	DeleteMode             DeleteMode
-	MaxDelete              int64
-	TrackRenames           bool // Track file renames.
-	LowLevelRetries        int
-	UpdateOlder            bool // Skip files that are newer on the destination
-	NoGzip                 bool // Disable compression
-	MaxDepth               int
-	IgnoreSize             bool
-	IgnoreChecksum         bool
-	IgnoreCaseSync         bool
-	NoTraverse             bool
-	NoUpdateModTime        bool
-	DataRateUnit           string
-	CompareDest            string
-	CopyDest               string
-	BackupDir              string
-	Suffix                 string
-	SuffixKeepExtension    bool
-	UseListR               bool
-	BufferSize             SizeSuffix
-	BwLimit                BwTimetable
-	TPSLimit               float64
-	TPSLimitBurst          int
-	BindAddr               net.IP
-	DisableFeatures        []string
-	UserAgent              string
-	Immutable              bool
-	AutoConfirm            bool
-	StreamingUploadCutoff  SizeSuffix
-	StatsFileNameLength    int
-	AskPassword            bool
-	UseServerModTime       bool
-	MaxTransfer            SizeSuffix
-	MaxBacklog             int
-	MaxStatsGroups         int
-	StatsOneLine           bool
-	StatsOneLineDate       bool   // If we want a date prefix at all
-	StatsOneLineDateFormat string // If we want to customize the prefix
-	Progress               bool
-	Cookie                 bool
-	UseMmap                bool
-	CaCert                 string // Client Side CA
-	ClientCert             string // Client Side Cert
-	ClientKey              string // Client Side Key
-	MultiThreadCutoff      SizeSuffix
-	MultiThreadStreams     int
-	MultiThreadSet         bool // whether MultiThreadStreams was set (set in fs/config/configflags)
+	LogLevel                   LogLevel
+	StatsLogLevel              LogLevel
+	UseJSONLog                 bool
+	DryRun                     bool
+	Interactive                bool
+	CheckSum                   bool
+	SizeOnly                   bool
+	IgnoreTimes                bool
+	IgnoreExisting             bool
+	IgnoreErrors               bool
+	ModifyWindow               time.Duration
+	Checkers                   int
+	Transfers                  int
+	ConnectTimeout             time.Duration // Connect timeout
+	Timeout                    time.Duration // Data channel timeout
+	ExpectContinueTimeout      time.Duration
+	Dump                       DumpFlags
+	InsecureSkipVerify         bool // Skip server certificate verification
+	DeleteMode                 DeleteMode
+	MaxDelete                  int64
+	MaxDeleteSize              SizeSuffix
+	TrackRenames               bool   // Track file renames.
+	TrackRenamesStrategy       string // Comma separated list of strategies used to track renames
+	LowLevelRetries            int
+	UpdateOlder                bool // Skip files that are newer on the destination
+	NoGzip                     bool // Disable compression
+	MaxDepth                   int
+	IgnoreSize                 bool
+	IgnoreChecksum             bool
+	IgnoreCaseSync             bool
+	NoTraverse                 bool
+	CheckFirst                 bool
+	NoCheckDest                bool
+	NoUnicodeNormalization     bool
+	NoUpdateModTime            bool
+	DataRateUnit               string
+	CompareDest                []string
+	CopyDest                   []string
+	BackupDir                  string
+	Suffix                     string
+	SuffixKeepExtension        bool
+	UseListR                   bool
+	BufferSize                 SizeSuffix
+	BwLimit                    BwTimetable
+	BwLimitFile                BwTimetable
+	TPSLimit                   float64
+	TPSLimitBurst              int
+	BindAddr                   net.IP
+	DisableFeatures            []string
+	UserAgent                  string
+	Immutable                  bool
+	AutoConfirm                bool
+	StreamingUploadCutoff      SizeSuffix
+	StatsFileNameLength        int
+	AskPassword                bool
+	PasswordCommand            SpaceSepList
+	UseServerModTime           bool
+	MaxTransfer                SizeSuffix
+	MaxDuration                time.Duration
+	CutoffMode                 CutoffMode
+	MaxBacklog                 int
+	MaxStatsGroups             int
+	StatsOneLine               bool
+	StatsOneLineDate           bool   // If we want a date prefix at all
+	StatsOneLineDateFormat     string // If we want to customize the prefix
+	ErrorOnNoTransfer          bool   // Set appropriate exit code if no files transferred
+	Progress                   bool
+	ProgressTerminalTitle      bool
+	Cookie                     bool
+	UseMmap                    bool
+	CaCert                     []string // Client Side CA
+	ClientCert                 string   // Client Side Cert
+	ClientKey                  string   // Client Side Key
+	MultiThreadCutoff          SizeSuffix
+	MultiThreadStreams         int
+	MultiThreadSet             bool       // whether MultiThreadStreams was set (set in fs/config/configflags)
+	MultiThreadChunkSize       SizeSuffix // Chunk size for multi-thread downloads / uploads, if not set by filesystem
+	MultiThreadWriteBufferSize SizeSuffix
+	OrderBy                    string // instructions on how to order the transfer
+	UploadHeaders              []*HTTPOption
+	DownloadHeaders            []*HTTPOption
+	Headers                    []*HTTPOption
+	MetadataSet                Metadata // extra metadata to write when uploading
+	RefreshTimes               bool
+	NoConsole                  bool
+	TrafficClass               uint8
+	FsCacheExpireDuration      time.Duration
+	FsCacheExpireInterval      time.Duration
+	DisableHTTP2               bool
+	HumanReadable              bool
+	KvLockTime                 time.Duration // maximum time to keep key-value database locked by process
+	DisableHTTPKeepAlives      bool
+	Metadata                   bool
+	ServerSideAcrossConfigs    bool
+	TerminalColorMode          TerminalColorMode
+	DefaultTime                Time // time that directories with no time should display
+	Inplace                    bool // Download directly to destination file instead of atomic download to temp/rename
 }
 
 // NewConfig creates a new config with everything set to the default
@@ -119,8 +164,10 @@ func NewConfig() *ConfigInfo {
 	c.Transfers = 4
 	c.ConnectTimeout = 60 * time.Second
 	c.Timeout = 5 * 60 * time.Second
+	c.ExpectContinueTimeout = 1 * time.Second
 	c.DeleteMode = DeleteModeDefault
 	c.MaxDelete = -1
+	c.MaxDeleteSize = SizeSuffix(-1)
 	c.LowLevelRetries = 10
 	c.MaxDepth = -1
 	c.DataRateUnit = "bytes"
@@ -135,21 +182,97 @@ func NewConfig() *ConfigInfo {
 	c.MaxBacklog = 10000
 	// We do not want to set the default here. We use this variable being empty as part of the fall-through of options.
 	//	c.StatsOneLineDateFormat = "2006/01/02 15:04:05 - "
-	c.MultiThreadCutoff = SizeSuffix(250 * 1024 * 1024)
+	c.MultiThreadCutoff = SizeSuffix(256 * 1024 * 1024)
 	c.MultiThreadStreams = 4
+	c.MultiThreadChunkSize = SizeSuffix(64 * 1024 * 1024)
+	c.MultiThreadWriteBufferSize = SizeSuffix(128 * 1024)
+
+	c.TrackRenamesStrategy = "hash"
+	c.FsCacheExpireDuration = 300 * time.Second
+	c.FsCacheExpireInterval = 60 * time.Second
+	c.KvLockTime = 1 * time.Second
+	c.DefaultTime = Time(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	// Perform a simple check for debug flags to enable debug logging during the flag initialization
+	for argIndex, arg := range os.Args {
+		if strings.HasPrefix(arg, "-vv") && strings.TrimRight(arg, "v") == "-" {
+			c.LogLevel = LogLevelDebug
+		}
+		if arg == "--log-level=DEBUG" || (arg == "--log-level" && len(os.Args) > argIndex+1 && os.Args[argIndex+1] == "DEBUG") {
+			c.LogLevel = LogLevelDebug
+		}
+		if strings.HasPrefix(arg, "--verbose=") {
+			if level, err := strconv.Atoi(arg[10:]); err == nil && level >= 2 {
+				c.LogLevel = LogLevelDebug
+			}
+		}
+	}
+	envValue, found := os.LookupEnv("RCLONE_LOG_LEVEL")
+	if found && envValue == "DEBUG" {
+		c.LogLevel = LogLevelDebug
+	}
 
 	return c
 }
 
-// ConfigToEnv converts an config section and name, eg ("myremote",
-// "ignore-size") into an environment name
-// "RCLONE_CONFIG_MYREMOTE_IGNORE_SIZE"
-func ConfigToEnv(section, name string) string {
-	return "RCLONE_CONFIG_" + strings.ToUpper(strings.Replace(section+"_"+name, "-", "_", -1))
+// TimeoutOrInfinite returns ci.Timeout if > 0 or infinite otherwise
+func (c *ConfigInfo) TimeoutOrInfinite() time.Duration {
+	if c.Timeout > 0 {
+		return c.Timeout
+	}
+	return ModTimeNotSupported
 }
 
-// OptionToEnv converts an option name, eg "ignore-size" into an
+type configContextKeyType struct{}
+
+// Context key for config
+var configContextKey = configContextKeyType{}
+
+// GetConfig returns the global or context sensitive context
+func GetConfig(ctx context.Context) *ConfigInfo {
+	if ctx == nil {
+		return globalConfig
+	}
+	c := ctx.Value(configContextKey)
+	if c == nil {
+		return globalConfig
+	}
+	return c.(*ConfigInfo)
+}
+
+// CopyConfig copies the global config (if any) from srcCtx into
+// dstCtx returning the new context.
+func CopyConfig(dstCtx, srcCtx context.Context) context.Context {
+	if srcCtx == nil {
+		return dstCtx
+	}
+	c := srcCtx.Value(configContextKey)
+	if c == nil {
+		return dstCtx
+	}
+	return context.WithValue(dstCtx, configContextKey, c)
+}
+
+// AddConfig returns a mutable config structure based on a shallow
+// copy of that found in ctx and returns a new context with that added
+// to it.
+func AddConfig(ctx context.Context) (context.Context, *ConfigInfo) {
+	c := GetConfig(ctx)
+	cCopy := new(ConfigInfo)
+	*cCopy = *c
+	newCtx := context.WithValue(ctx, configContextKey, cCopy)
+	return newCtx, cCopy
+}
+
+// ConfigToEnv converts a config section and name, e.g. ("my-remote",
+// "ignore-size") into an environment name
+// "RCLONE_CONFIG_MY-REMOTE_IGNORE_SIZE"
+func ConfigToEnv(section, name string) string {
+	return "RCLONE_CONFIG_" + strings.ToUpper(section+"_"+strings.ReplaceAll(name, "-", "_"))
+}
+
+// OptionToEnv converts an option name, e.g. "ignore-size" into an
 // environment name "RCLONE_IGNORE_SIZE"
 func OptionToEnv(name string) string {
-	return "RCLONE_" + strings.ToUpper(strings.Replace(name, "-", "_", -1))
+	return "RCLONE_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
 }

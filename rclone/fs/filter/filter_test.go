@@ -3,7 +3,6 @@ package filter
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 	"sync"
@@ -24,13 +23,14 @@ func TestNewFilterDefault(t *testing.T) {
 	assert.Equal(t, fs.SizeSuffix(-1), f.Opt.MaxSize)
 	assert.Len(t, f.fileRules.rules, 0)
 	assert.Len(t, f.dirRules.rules, 0)
+	assert.Len(t, f.metaRules.rules, 0)
 	assert.Nil(t, f.files)
 	assert.True(t, f.InActive())
 }
 
 // testFile creates a temp file with the contents
 func testFile(t *testing.T, contents string) string {
-	out, err := ioutil.TempFile("", "filter_test")
+	out, err := os.CreateTemp("", "filter_test")
 	require.NoError(t, err)
 	defer func() {
 		err := out.Close()
@@ -62,7 +62,30 @@ func TestNewFilterForbiddenMixOfFilesFromAndFilterRule(t *testing.T) {
 
 	_, err := NewFilter(&Opt)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "The usage of --files-from overrides all other filters")
+	require.Contains(t, err.Error(), "the usage of --files-from overrides all other filters")
+}
+
+func TestNewFilterForbiddenMixOfFilesFromRawAndFilterRule(t *testing.T) {
+	Opt := DefaultOpt
+
+	// Set up the input
+	Opt.FilterRule = []string{"- filter1", "- filter1b"}
+	Opt.FilesFromRaw = []string{testFile(t, "#comment\nfiles1\nfiles2\n")}
+
+	rm := func(p string) {
+		err := os.Remove(p)
+		if err != nil {
+			t.Logf("error removing %q: %v", p, err)
+		}
+	}
+	// Reset the input
+	defer func() {
+		rm(Opt.FilesFromRaw[0])
+	}()
+
+	_, err := NewFilter(&Opt)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "the usage of --files-from-raw overrides all other filters")
 }
 
 func TestNewFilterWithFilesFromAlone(t *testing.T) {
@@ -86,6 +109,34 @@ func TestNewFilterWithFilesFromAlone(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, f.files, 2)
 	for _, name := range []string{"files1", "files2"} {
+		_, ok := f.files[name]
+		if !ok {
+			t.Errorf("Didn't find file %q in f.files", name)
+		}
+	}
+}
+
+func TestNewFilterWithFilesFromRaw(t *testing.T) {
+	Opt := DefaultOpt
+
+	// Set up the input
+	Opt.FilesFromRaw = []string{testFile(t, "#comment\nfiles1\nfiles2\n")}
+
+	rm := func(p string) {
+		err := os.Remove(p)
+		if err != nil {
+			t.Logf("error removing %q: %v", p, err)
+		}
+	}
+	// Reset the input
+	defer func() {
+		rm(Opt.FilesFromRaw[0])
+	}()
+
+	f, err := NewFilter(&Opt)
+	require.NoError(t, err)
+	assert.Len(t, f.files, 3)
+	for _, name := range []string{"#comment", "files1", "files2"} {
 		_, ok := f.files[name]
 		if !ok {
 			t.Errorf("Didn't find file %q in f.files", name)
@@ -157,7 +208,7 @@ type includeTest struct {
 
 func testInclude(t *testing.T, f *Filter, tests []includeTest) {
 	for _, test := range tests {
-		got := f.Include(test.in, test.size, time.Unix(test.modTime, 0))
+		got := f.Include(test.in, test.size, time.Unix(test.modTime, 0), nil)
 		assert.Equal(t, test.want, got, fmt.Sprintf("in=%q, size=%v, modTime=%v", test.in, test.size, time.Unix(test.modTime, 0)))
 	}
 }
@@ -309,6 +360,15 @@ func TestNewFilterMakeListR(t *testing.T) {
 	require.NoError(t, f.AddFile("error"))
 	err = listR(context.Background(), "", listRcallback)
 	require.EqualError(t, err, assert.AnError.Error())
+
+	// The checker will exit by the error above
+	ci := fs.GetConfig(context.Background())
+	ci.Checkers = 1
+
+	// Now check an error is returned from NewObject
+	require.NoError(t, f.AddFile("error"))
+	err = listR(context.Background(), "", listRcallback)
+	require.EqualError(t, err, assert.AnError.Error())
 }
 
 func TestNewFilterMinSize(t *testing.T) {
@@ -452,6 +512,81 @@ func TestNewFilterMatchesIgnoreCase(t *testing.T) {
 	assert.False(t, f.InActive())
 }
 
+func TestNewFilterMatchesRegexp(t *testing.T) {
+	f, err := NewFilter(nil)
+	require.NoError(t, err)
+	add := func(s string) {
+		err := f.AddRule(s)
+		require.NoError(t, err)
+	}
+	add(`+ /{{file\d+\.png}}`)
+	add(`+ *.{{(?i)jpg}}`)
+	add(`- *`)
+	testInclude(t, f, []includeTest{
+		{"file2.png", 100, 0, true},
+		{"sub/file2.png", 100, 0, false},
+		{"file123.png", 100, 0, true},
+		{"File123.png", 100, 0, false},
+		{"something.jpg", 100, 0, true},
+		{"deep/path/something.JPG", 100, 0, true},
+		{"something.gif", 100, 0, false},
+	})
+	testDirInclude(t, f, []includeDirTest{
+		{"anything at all", true},
+	})
+	assert.False(t, f.InActive())
+}
+
+type includeTestMetadata struct {
+	in       string
+	metadata fs.Metadata
+	want     bool
+}
+
+func testIncludeMetadata(t *testing.T, f *Filter, tests []includeTestMetadata) {
+	for _, test := range tests {
+		got := f.Include(test.in, 0, time.Time{}, test.metadata)
+		assert.Equal(t, test.want, got, fmt.Sprintf("in=%q, metadata=%+v", test.in, test.metadata))
+	}
+}
+
+func TestNewFilterMetadataInclude(t *testing.T) {
+	f, err := NewFilter(nil)
+	require.NoError(t, err)
+	add := func(s string) {
+		err := f.metaRules.AddRule(s)
+		require.NoError(t, err)
+	}
+	add(`+ t*=t*`)
+	add(`- *`)
+	testIncludeMetadata(t, f, []includeTestMetadata{
+		{"nil", nil, false},
+		{"empty", fs.Metadata{}, false},
+		{"ok1", fs.Metadata{"thing": "thang"}, true},
+		{"ok2", fs.Metadata{"thing1": "thang1"}, true},
+		{"missing", fs.Metadata{"Thing1": "Thang1"}, false},
+	})
+	assert.False(t, f.InActive())
+}
+
+func TestNewFilterMetadataExclude(t *testing.T) {
+	f, err := NewFilter(nil)
+	require.NoError(t, err)
+	add := func(s string) {
+		err := f.metaRules.AddRule(s)
+		require.NoError(t, err)
+	}
+	add(`- thing=thang`)
+	add(`+ *`)
+	testIncludeMetadata(t, f, []includeTestMetadata{
+		{"nil", nil, true},
+		{"empty", fs.Metadata{}, true},
+		{"ok1", fs.Metadata{"thing": "thang"}, false},
+		{"missing1", fs.Metadata{"thing1": "thang1"}, true},
+	})
+	assert.False(t, f.InActive())
+}
+
 func TestFilterAddDirRuleOrFileRule(t *testing.T) {
 	for _, test := range []struct {
 		included bool
@@ -472,6 +607,21 @@ func TestFilterAddDirRuleOrFileRule(t *testing.T) {
 + (^|/)potato$
 --- Directory filter rules ---
 + ^.*$`,
+		},
+		{
+			false,
+			"potato/",
+			`--- File filter rules ---
+- (^|/)potato/.*$
+--- Directory filter rules ---
+- (^|/)potato/.*$`,
+		},
+		{
+			true,
+			"potato/",
+			`--- File filter rules ---
+--- Directory filter rules ---
++ (^|/)potato/$`,
 		},
 		{
 			false,
@@ -517,7 +667,7 @@ func TestFilterAddDirRuleOrFileRule(t *testing.T) {
 	}
 }
 
-func TestFilterForEachLine(t *testing.T) {
+func testFilterForEachLine(t *testing.T, useStdin, raw bool) {
 	file := testFile(t, `; comment
 one
 # another comment
@@ -534,12 +684,45 @@ five
 		require.NoError(t, err)
 	}()
 	lines := []string{}
-	err := forEachLine(file, func(s string) error {
+	fileName := file
+	if useStdin {
+		in, err := os.Open(file)
+		require.NoError(t, err)
+		oldStdin := os.Stdin
+		os.Stdin = in
+		defer func() {
+			os.Stdin = oldStdin
+			_ = in.Close()
+		}()
+		fileName = "-"
+	}
+	err := forEachLine(fileName, raw, func(s string) error {
 		lines = append(lines, s)
 		return nil
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "one,two,three,four,five,six", strings.Join(lines, ","))
+	if raw {
+		assert.Equal(t, "; comment,one,# another comment,,,two, # indented comment,three  ,four    ,five,  six  ",
+			strings.Join(lines, ","))
+	} else {
+		assert.Equal(t, "one,two,three,four,five,six", strings.Join(lines, ","))
+	}
+}
+
+func TestFilterForEachLine(t *testing.T) {
+	testFilterForEachLine(t, false, false)
+}
+
+func TestFilterForEachLineStdin(t *testing.T) {
+	testFilterForEachLine(t, true, false)
+}
+
+func TestFilterForEachLineWithRaw(t *testing.T) {
+	testFilterForEachLine(t, false, true)
+}
+
+func TestFilterForEachLineStdinWithRaw(t *testing.T) {
+	testFilterForEachLine(t, true, true)
 }
 
 func TestFilterMatchesFromDocs(t *testing.T) {
@@ -590,7 +773,7 @@ func TestFilterMatchesFromDocs(t *testing.T) {
 		require.NoError(t, err)
 		err = f.Add(false, "*")
 		require.NoError(t, err)
-		included := f.Include(test.file, 0, time.Unix(0, 0))
+		included := f.Include(test.file, 0, time.Unix(0, 0), nil)
 		if included != test.included {
 			t.Errorf("%q match %q: want %v got %v", test.glob, test.file, test.included, included)
 		}
@@ -668,4 +851,33 @@ func TestNewFilterUsesDirectoryFilters(t *testing.T) {
 		got := f.UsesDirectoryFilters()
 		assert.Equal(t, test.want, got, fmt.Sprintf("%s: %s", what, f.DumpFilters()))
 	}
+}
+
+func TestGetConfig(t *testing.T) {
+	ctx := context.Background()
+
+	// Check nil
+	//lint:ignore SA1012 false positive when running staticcheck, we want to test passing a nil Context and therefore ignore lint suggestion to use context.TODO
+	//nolint:staticcheck // Don't include staticcheck when running golangci-lint to avoid SA1012
+	config := GetConfig(nil)
+	assert.Equal(t, globalConfig, config)
+
+	// Check empty config
+	config = GetConfig(ctx)
+	assert.Equal(t, globalConfig, config)
+
+	// Check adding a config
+	ctx2, config2 := AddConfig(ctx)
+	require.NoError(t, config2.AddRule("+ *.jpg"))
+	assert.NotEqual(t, config2, config)
+
+	// Check can get config back
+	config2ctx := GetConfig(ctx2)
+	assert.Equal(t, config2, config2ctx)
+
+	// Check ReplaceConfig
+	f, err := NewFilter(nil)
+	require.NoError(t, err)
+	ctx3 := ReplaceConfig(ctx, f)
+	assert.Equal(t, globalConfig, GetConfig(ctx3))
 }

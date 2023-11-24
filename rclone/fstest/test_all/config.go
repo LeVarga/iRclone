@@ -1,15 +1,13 @@
 // Config handling
 
-// +build go1.11
-
 package main
 
 import (
-	"io/ioutil"
+	"fmt"
 	"log"
+	"os"
 	"path"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/fs"
 	yaml "gopkg.in/yaml.v2"
 )
@@ -27,16 +25,19 @@ type Test struct {
 
 // Backend describes a backend test
 //
-// FIXME make bucket based remotes set sub-dir automatically???
+// FIXME make bucket-based remotes set sub-dir automatically???
 type Backend struct {
-	Backend  string   // name of the backend directory
-	Remote   string   // name of the test remote
-	FastList bool     // set to test with -fast-list
-	Short    bool     // set to test with -short
-	OneOnly  bool     // set to run only one backend test at once
-	MaxFile  string   // file size limit
-	Ignore   []string // test names to ignore the failure of
-	Tests    []string // paths of tests to run, blank for all
+	Backend     string   // name of the backend directory
+	Remote      string   // name of the test remote
+	FastList    bool     // set to test with -fast-list
+	Short       bool     // set to test with -short
+	OneOnly     bool     // set to run only one backend test at once
+	MaxFile     string   // file size limit
+	CleanUp     bool     // when running clean, run cleanup first
+	Ignore      []string // test names to ignore the failure of
+	Tests       []string // paths of tests to run, blank for all
+	ListRetries int      // -list-retries if > 0
+	ExtraTime   float64  // factor to multiply the timeout by
 }
 
 // includeTest returns true if this backend should be included in this
@@ -55,8 +56,8 @@ func (b *Backend) includeTest(t *Test) bool {
 
 // MakeRuns creates Run objects the Backend and Test
 //
-// There can be several created, one for each combination of optionl
-// flags (eg FastList)
+// There can be several created, one for each combination of optional
+// flags (e.g. FastList)
 func (b *Backend) MakeRuns(t *Test) (runs []*Run) {
 	if !b.includeTest(t) {
 		return runs
@@ -80,16 +81,18 @@ func (b *Backend) MakeRuns(t *Test) (runs []*Run) {
 			continue
 		}
 		run := &Run{
-			Remote:    b.Remote,
-			Backend:   b.Backend,
-			Path:      t.Path,
-			FastList:  fastlist,
-			Short:     (b.Short && t.Short),
-			NoRetries: t.NoRetries,
-			OneOnly:   b.OneOnly,
-			NoBinary:  t.NoBinary,
-			SizeLimit: int64(maxSize),
-			Ignore:    ignore,
+			Remote:      b.Remote,
+			Backend:     b.Backend,
+			Path:        t.Path,
+			FastList:    fastlist,
+			Short:       (b.Short && t.Short),
+			NoRetries:   t.NoRetries,
+			OneOnly:     b.OneOnly,
+			NoBinary:    t.NoBinary,
+			SizeLimit:   int64(maxSize),
+			Ignore:      ignore,
+			ListRetries: b.ListRetries,
+			ExtraTime:   b.ExtraTime,
 		}
 		if t.AddBackend {
 			run.Path = path.Join(run.Path, b.Backend)
@@ -107,14 +110,14 @@ type Config struct {
 
 // NewConfig reads the config file
 func NewConfig(configFile string) (*Config, error) {
-	d, err := ioutil.ReadFile(configFile)
+	d, err := os.ReadFile(configFile)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to read config file")
+		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 	config := &Config{}
 	err = yaml.Unmarshal(d, &config)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to parse config file")
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 	// d, err = yaml.Marshal(&config)
 	// if err != nil {
@@ -185,17 +188,4 @@ func (c *Config) filterTests(paths []string) {
 		}
 	}
 	c.Tests = newTests
-}
-
-// Remotes returns the unique remotes
-func (c *Config) Remotes() (remotes []string) {
-	found := map[string]struct{}{}
-	for _, backend := range c.Backends {
-		if _, ok := found[backend.Remote]; ok {
-			continue
-		}
-		remotes = append(remotes, backend.Remote)
-		found[backend.Remote] = struct{}{}
-	}
-	return remotes
 }

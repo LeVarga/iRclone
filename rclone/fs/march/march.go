@@ -3,12 +3,11 @@ package march
 
 import (
 	"context"
+	"fmt"
 	"path"
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/pkg/errors"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/dirtree"
@@ -22,14 +21,16 @@ import (
 // calling Callback for each match
 type March struct {
 	// parameters
-	Ctx           context.Context // context for background goroutines
-	Fdst          fs.Fs           // source Fs
-	Fsrc          fs.Fs           // dest Fs
-	Dir           string          // directory
-	NoTraverse    bool            // don't traverse the destination
-	SrcIncludeAll bool            // don't include all files in the src
-	DstIncludeAll bool            // don't include all files in the destination
-	Callback      Marcher         // object to call with results
+	Ctx                    context.Context // context for background goroutines
+	Fdst                   fs.Fs           // source Fs
+	Fsrc                   fs.Fs           // dest Fs
+	Dir                    string          // directory
+	NoTraverse             bool            // don't traverse the destination
+	SrcIncludeAll          bool            // don't include all files in the src
+	DstIncludeAll          bool            // don't include all files in the destination
+	Callback               Marcher         // object to call with results
+	NoCheckDest            bool            // transfer all objects regardless without checking dst
+	NoUnicodeNormalization bool            // don't normalize unicode characters in filenames
 	// internal state
 	srcListDir listDirFn // function to call to list a directory in the src
 	dstListDir listDirFn // function to call to list a directory in the dst
@@ -47,21 +48,25 @@ type Marcher interface {
 }
 
 // init sets up a march over opt.Fsrc, and opt.Fdst calling back callback for each match
-func (m *March) init() {
-	m.srcListDir = m.makeListDir(m.Fsrc, m.SrcIncludeAll)
+// Note: this will flag filter-aware backends on the source side
+func (m *March) init(ctx context.Context) {
+	ci := fs.GetConfig(ctx)
+	m.srcListDir = m.makeListDir(ctx, m.Fsrc, m.SrcIncludeAll)
 	if !m.NoTraverse {
-		m.dstListDir = m.makeListDir(m.Fdst, m.DstIncludeAll)
+		m.dstListDir = m.makeListDir(ctx, m.Fdst, m.DstIncludeAll)
 	}
 	// Now create the matching transform
 	// ..normalise the UTF8 first
-	m.transforms = append(m.transforms, norm.NFC.String)
+	if !m.NoUnicodeNormalization {
+		m.transforms = append(m.transforms, norm.NFC.String)
+	}
 	// ..if destination is caseInsensitive then make it lower case
 	// case Insensitive | src | dst | lower case compare |
 	//                  | No  | No  | No                 |
 	//                  | Yes | No  | No                 |
 	//                  | No  | Yes | Yes                |
 	//                  | Yes | Yes | Yes                |
-	if m.Fdst.Features().CaseInsensitive || fs.Config.IgnoreCaseSync {
+	if m.Fdst.Features().CaseInsensitive || ci.IgnoreCaseSync {
 		m.transforms = append(m.transforms, strings.ToLower)
 	}
 }
@@ -71,11 +76,15 @@ type listDirFn func(dir string) (entries fs.DirEntries, err error)
 
 // makeListDir makes constructs a listing function for the given fs
 // and includeAll flags for marching through the file system.
-func (m *March) makeListDir(f fs.Fs, includeAll bool) listDirFn {
-	if !(fs.Config.UseListR && f.Features().ListR != nil) && // !--fast-list active and
-		!(fs.Config.NoTraverse && filter.Active.HaveFilesFrom()) { // !(--files-from and --no-traverse)
+// Note: this will optionally flag filter-aware backends!
+func (m *March) makeListDir(ctx context.Context, f fs.Fs, includeAll bool) listDirFn {
+	ci := fs.GetConfig(ctx)
+	fi := filter.GetConfig(ctx)
+	if !(ci.UseListR && f.Features().ListR != nil) && // !--fast-list active and
+		!(ci.NoTraverse && fi.HaveFilesFrom()) { // !(--files-from and --no-traverse)
 		return func(dir string) (entries fs.DirEntries, err error) {
-			return list.DirSorted(m.Ctx, f, includeAll, dir)
+			dirCtx := filter.SetUseFilter(m.Ctx, f.Features().FilterAware && !includeAll) // make filter-aware backends constrain List
+			return list.DirSorted(dirCtx, f, includeAll, dir)
 		}
 	}
 
@@ -91,7 +100,8 @@ func (m *March) makeListDir(f fs.Fs, includeAll bool) listDirFn {
 		mu.Lock()
 		defer mu.Unlock()
 		if !started {
-			dirs, dirsErr = walk.NewDirTree(m.Ctx, f, m.Dir, includeAll, fs.Config.MaxDepth)
+			dirCtx := filter.SetUseFilter(m.Ctx, f.Features().FilterAware && !includeAll) // make filter-aware backends constrain List
+			dirs, dirsErr = walk.NewDirTree(dirCtx, f, m.Dir, includeAll, ci.MaxDepth)
 			started = true
 		}
 		if dirsErr != nil {
@@ -118,15 +128,17 @@ type listDirJob struct {
 }
 
 // Run starts the matching process off
-func (m *March) Run() error {
-	m.init()
+func (m *March) Run(ctx context.Context) error {
+	ci := fs.GetConfig(ctx)
+	fi := filter.GetConfig(ctx)
+	m.init(ctx)
 
-	srcDepth := fs.Config.MaxDepth
+	srcDepth := ci.MaxDepth
 	if srcDepth < 0 {
 		srcDepth = fs.MaxLevel
 	}
 	dstDepth := srcDepth
-	if filter.Active.Opt.DeleteExcluded {
+	if fi.Opt.DeleteExcluded {
 		dstDepth = fs.MaxLevel
 	}
 
@@ -137,8 +149,9 @@ func (m *March) Run() error {
 	// Start some directory listing go routines
 	var wg sync.WaitGroup         // sync closing of go routines
 	var traversing sync.WaitGroup // running directory traversals
-	in := make(chan listDirJob, fs.Config.Checkers)
-	for i := 0; i < fs.Config.Checkers; i++ {
+	checkers := ci.Checkers
+	in := make(chan listDirJob, checkers)
+	for i := 0; i < checkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -188,6 +201,7 @@ func (m *March) Run() error {
 		srcDepth:  srcDepth - 1,
 		dstRemote: m.Dir,
 		dstDepth:  dstDepth - 1,
+		noDst:     m.NoCheckDest,
 	}
 	go func() {
 		// when the context is cancelled discard the remaining jobs
@@ -201,7 +215,7 @@ func (m *March) Run() error {
 	wg.Wait()
 
 	if errCount > 1 {
-		return errors.Wrapf(jobError, "march failed with %d error(s): first error", errCount)
+		return fmt.Errorf("march failed with %d error(s): first error: %w", errCount, jobError)
 	}
 	return jobError
 }
@@ -371,6 +385,7 @@ func (m *March) processJob(job listDirJob) ([]listDirJob, error) {
 		srcList, dstList       fs.DirEntries
 		srcListErr, dstListErr error
 		wg                     sync.WaitGroup
+		mu                     sync.Mutex
 	)
 
 	// List the src and dst directories
@@ -392,30 +407,49 @@ func (m *March) processJob(job listDirJob) ([]listDirJob, error) {
 	// Wait for listings to complete and report errors
 	wg.Wait()
 	if srcListErr != nil {
-		fs.Errorf(job.srcRemote, "error reading source directory: %v", srcListErr)
-		fs.CountError(srcListErr)
+		if job.srcRemote != "" {
+			fs.Errorf(job.srcRemote, "error reading source directory: %v", srcListErr)
+		} else {
+			fs.Errorf(m.Fsrc, "error reading source root directory: %v", srcListErr)
+		}
+		srcListErr = fs.CountError(srcListErr)
 		return nil, srcListErr
 	}
 	if dstListErr == fs.ErrorDirNotFound {
 		// Copy the stuff anyway
 	} else if dstListErr != nil {
-		fs.Errorf(job.dstRemote, "error reading destination directory: %v", dstListErr)
-		fs.CountError(dstListErr)
+		if job.dstRemote != "" {
+			fs.Errorf(job.dstRemote, "error reading destination directory: %v", dstListErr)
+		} else {
+			fs.Errorf(m.Fdst, "error reading destination root directory: %v", dstListErr)
+		}
+		dstListErr = fs.CountError(dstListErr)
 		return nil, dstListErr
 	}
 
 	// If NoTraverse is set, then try to find a matching object
-	// for each item in the srcList
-	if m.NoTraverse {
+	// for each item in the srcList to head dst object
+	ci := fs.GetConfig(m.Ctx)
+	limiter := make(chan struct{}, ci.Checkers)
+	if m.NoTraverse && !m.NoCheckDest {
 		for _, src := range srcList {
-			if srcObj, ok := src.(fs.Object); ok {
-				leaf := path.Base(srcObj.Remote())
-				dstObj, err := m.Fdst.NewObject(m.Ctx, path.Join(job.dstRemote, leaf))
-				if err == nil {
-					dstList = append(dstList, dstObj)
+			wg.Add(1)
+			limiter <- struct{}{}
+			go func(limiter chan struct{}, src fs.DirEntry) {
+				defer wg.Done()
+				if srcObj, ok := src.(fs.Object); ok {
+					leaf := path.Base(srcObj.Remote())
+					dstObj, err := m.Fdst.NewObject(m.Ctx, path.Join(job.dstRemote, leaf))
+					if err == nil {
+						mu.Lock()
+						dstList = append(dstList, dstObj)
+						mu.Unlock()
+					}
 				}
-			}
+				<-limiter
+			}(limiter, src)
 		}
+		wg.Wait()
 	}
 
 	// Work out what to do and do it

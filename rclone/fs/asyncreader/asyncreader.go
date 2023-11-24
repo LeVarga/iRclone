@@ -3,11 +3,12 @@
 package asyncreader
 
 import (
+	"context"
+	"errors"
 	"io"
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/lib/pool"
 	"github.com/rclone/rclone/lib/readers"
@@ -21,24 +22,26 @@ const (
 	bufferCacheFlushTime = 5 * time.Second // flush the cached buffers after this long
 )
 
-var errorStreamAbandoned = errors.New("stream abandoned")
+// ErrorStreamAbandoned is returned when the input is closed before the end of the stream
+var ErrorStreamAbandoned = errors.New("stream abandoned")
 
 // AsyncReader will do async read-ahead from the input reader
 // and make the data available as an io.Reader.
 // This should be fully transparent, except that once an error
 // has been returned from the Reader, it will not recover.
 type AsyncReader struct {
-	in      io.ReadCloser // Input reader
-	ready   chan *buffer  // Buffers ready to be handed to the reader
-	token   chan struct{} // Tokens which allow a buffer to be taken
-	exit    chan struct{} // Closes when finished
-	buffers int           // Number of buffers
-	err     error         // If an error has occurred it is here
-	cur     *buffer       // Current buffer being served
-	exited  chan struct{} // Channel is closed been the async reader shuts down
-	size    int           // size of buffer to use
-	closed  bool          // whether we have closed the underlying stream
-	mu      sync.Mutex    // lock for Read/WriteTo/Abandon/Close
+	in      io.ReadCloser  // Input reader
+	ready   chan *buffer   // Buffers ready to be handed to the reader
+	token   chan struct{}  // Tokens which allow a buffer to be taken
+	exit    chan struct{}  // Closes when finished
+	buffers int            // Number of buffers
+	err     error          // If an error has occurred it is here
+	cur     *buffer        // Current buffer being served
+	exited  chan struct{}  // Channel is closed been the async reader shuts down
+	size    int            // size of buffer to use
+	closed  bool           // whether we have closed the underlying stream
+	mu      sync.Mutex     // lock for Read/WriteTo/Abandon/Close
+	ci      *fs.ConfigInfo // for reading config
 }
 
 // New returns a reader that will asynchronously read from
@@ -47,14 +50,16 @@ type AsyncReader struct {
 // function has returned.
 // The input can be read from the returned reader.
 // When done use Close to release the buffers and close the supplied input.
-func New(rd io.ReadCloser, buffers int) (*AsyncReader, error) {
+func New(ctx context.Context, rd io.ReadCloser, buffers int) (*AsyncReader, error) {
 	if buffers <= 0 {
 		return nil, errors.New("number of buffers too small")
 	}
 	if rd == nil {
 		return nil, errors.New("nil reader supplied")
 	}
-	a := &AsyncReader{}
+	a := &AsyncReader{
+		ci: fs.GetConfig(ctx),
+	}
 	a.init(rd, buffers)
 	return a, nil
 }
@@ -63,8 +68,8 @@ func (a *AsyncReader) init(rd io.ReadCloser, buffers int) {
 	a.in = rd
 	a.ready = make(chan *buffer, buffers)
 	a.token = make(chan struct{}, buffers)
-	a.exit = make(chan struct{}, 0)
-	a.exited = make(chan struct{}, 0)
+	a.exit = make(chan struct{})
+	a.exited = make(chan struct{})
 	a.buffers = buffers
 	a.cur = nil
 	a.size = softStartInitial
@@ -113,7 +118,7 @@ func (a *AsyncReader) putBuffer(b *buffer) {
 func (a *AsyncReader) getBuffer() *buffer {
 	bufferPoolOnce.Do(func() {
 		// Initialise the buffer pool when used
-		bufferPool = pool.New(bufferCacheFlushTime, BufferSize, bufferCacheSize, fs.Config.UseMmap)
+		bufferPool = pool.New(bufferCacheFlushTime, BufferSize, bufferCacheSize, a.ci.UseMmap)
 	})
 	return &buffer{
 		buf: bufferPool.Get(),
@@ -132,7 +137,7 @@ func (a *AsyncReader) fill() (err error) {
 		if !ok {
 			// Return an error to show fill failed
 			if a.err == nil {
-				return errorStreamAbandoned
+				return ErrorStreamAbandoned
 			}
 			return a.err
 		}
@@ -174,6 +179,9 @@ func (a *AsyncReader) WriteTo(w io.Writer) (n int64, err error) {
 	n = 0
 	for {
 		err = a.fill()
+		if err == io.EOF {
+			return n, nil
+		}
 		if err != nil {
 			return n, err
 		}
@@ -181,6 +189,10 @@ func (a *AsyncReader) WriteTo(w io.Writer) (n int64, err error) {
 		a.cur.increment(n2)
 		n += int64(n2)
 		if err != nil {
+			return n, err
+		}
+		if a.cur.err == io.EOF {
+			a.err = a.cur.err
 			return n, err
 		}
 		if a.cur.err != nil {
@@ -260,9 +272,15 @@ func (a *AsyncReader) SkipBytes(skip int) (ok bool) {
 	}
 }
 
-// Abandon will ensure that the underlying async reader is shut down.
-// It will NOT close the input supplied on New.
-func (a *AsyncReader) Abandon() {
+// StopBuffering will ensure that the underlying async reader is shut
+// down so no more is read from the input.
+//
+// This does not free the memory so Abandon() or Close() need to be
+// called on the input.
+//
+// This does not wait for Read/WriteTo to complete so can be called
+// concurrently to those.
+func (a *AsyncReader) StopBuffering() {
 	select {
 	case <-a.exit:
 		// Do nothing if reader routine already exited
@@ -272,6 +290,14 @@ func (a *AsyncReader) Abandon() {
 	// Close and wait for go routine
 	close(a.exit)
 	<-a.exited
+}
+
+// Abandon will ensure that the underlying async reader is shut down
+// and memory is returned. It does everything but close the input.
+//
+// It will NOT close the input supplied on New.
+func (a *AsyncReader) Abandon() {
+	a.StopBuffering()
 	// take the lock to wait for Read/WriteTo to complete
 	a.mu.Lock()
 	defer a.mu.Unlock()

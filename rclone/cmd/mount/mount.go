@@ -1,76 +1,62 @@
-// Package mount implents a FUSE mounting system for rclone remotes.
+//go:build linux || freebsd
+// +build linux freebsd
 
-// +build linux darwin freebsd
-
+// Package mount implements a FUSE mounting system for rclone remotes.
 package mount
 
 import (
 	"fmt"
-	"os"
-	"os/signal"
-	"syscall"
+	"runtime"
 
 	"bazil.org/fuse"
 	fusefs "bazil.org/fuse/fs"
-	"github.com/okzk/sdnotify"
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/cmd/mountlib"
 	"github.com/rclone/rclone/fs"
-	"github.com/rclone/rclone/lib/atexit"
 	"github.com/rclone/rclone/vfs"
-	"github.com/rclone/rclone/vfs/vfsflags"
 )
 
 func init() {
-	mountlib.NewMountCommand("mount", Mount)
+	mountlib.NewMountCommand("mount", false, mount)
+	mountlib.AddRc("mount", mount)
 }
 
 // mountOptions configures the options from the command line flags
-func mountOptions(device string) (options []fuse.MountOption) {
+func mountOptions(VFS *vfs.VFS, device string, opt *mountlib.Options) (options []fuse.MountOption) {
 	options = []fuse.MountOption{
-		fuse.MaxReadahead(uint32(mountlib.MaxReadAhead)),
+		fuse.MaxReadahead(uint32(opt.MaxReadAhead)),
 		fuse.Subtype("rclone"),
 		fuse.FSName(device),
-		fuse.VolumeName(mountlib.VolumeName),
 
 		// Options from benchmarking in the fuse module
 		//fuse.MaxReadahead(64 * 1024 * 1024),
-		//fuse.AsyncRead(), - FIXME this causes
-		// ReadFileHandle.Read error: read /home/files/ISOs/xubuntu-15.10-desktop-amd64.iso: bad file descriptor
-		// which is probably related to errors people are having
 		//fuse.WritebackCache(),
 	}
-	if mountlib.NoAppleDouble {
-		options = append(options, fuse.NoAppleDouble())
+	if opt.AsyncRead {
+		options = append(options, fuse.AsyncRead())
 	}
-	if mountlib.NoAppleXattr {
-		options = append(options, fuse.NoAppleXattr())
-	}
-	if mountlib.AllowNonEmpty {
-		options = append(options, fuse.AllowNonEmptyMount())
-	}
-	if mountlib.AllowOther {
+	if opt.AllowOther {
 		options = append(options, fuse.AllowOther())
 	}
-	if mountlib.AllowRoot {
-		options = append(options, fuse.AllowRoot())
+	if opt.AllowRoot {
+		// options = append(options, fuse.AllowRoot())
+		fs.Errorf(nil, "Ignoring --allow-root. Support has been removed upstream - see https://github.com/bazil/fuse/issues/144 for more info")
 	}
-	if mountlib.DefaultPermissions {
+	if opt.DefaultPermissions {
 		options = append(options, fuse.DefaultPermissions())
 	}
-	if vfsflags.Opt.ReadOnly {
+	if VFS.Opt.ReadOnly {
 		options = append(options, fuse.ReadOnly())
 	}
-	if mountlib.WritebackCache {
+	if opt.WritebackCache {
 		options = append(options, fuse.WritebackCache())
 	}
-	if mountlib.DaemonTimeout != 0 {
-		options = append(options, fuse.DaemonTimeout(fmt.Sprint(int(mountlib.DaemonTimeout.Seconds()))))
+	if opt.DaemonTimeout != 0 {
+		options = append(options, fuse.DaemonTimeout(fmt.Sprint(int(opt.DaemonTimeout.Seconds()))))
 	}
-	if len(mountlib.ExtraOptions) > 0 {
+	if len(opt.ExtraOptions) > 0 {
 		fs.Errorf(nil, "-o/--option not supported with this FUSE backend")
 	}
-	if len(mountlib.ExtraFlags) > 0 {
+	if len(opt.ExtraFlags) > 0 {
 		fs.Errorf(nil, "--fuse-flag not supported with this FUSE backend")
 	}
 	return options
@@ -82,20 +68,37 @@ func mountOptions(device string) (options []fuse.MountOption) {
 //
 // returns an error, and an error channel for the serve process to
 // report an error when fusermount is called.
-func mount(f fs.Fs, mountpoint string) (*vfs.VFS, <-chan error, func() error, error) {
+func mount(VFS *vfs.VFS, mountpoint string, opt *mountlib.Options) (<-chan error, func() error, error) {
+	f := VFS.Fs()
+	if runtime.GOOS == "darwin" {
+		fs.Logf(nil, "macOS users: please try \"rclone cmount\" as it will be the default in v1.54")
+	}
+	if err := mountlib.CheckOverlap(f, mountpoint); err != nil {
+		return nil, nil, err
+	}
+	if err := mountlib.CheckAllowNonEmpty(mountpoint, opt); err != nil {
+		return nil, nil, err
+	}
 	fs.Debugf(f, "Mounting on %q", mountpoint)
-	c, err := fuse.Mount(mountpoint, mountOptions(f.Name()+":"+f.Root())...)
-	if err != nil {
-		return nil, nil, nil, err
+
+	if opt.DebugFUSE {
+		fuse.Debug = func(msg interface{}) {
+			fs.Debugf("fuse", "%v", msg)
+		}
 	}
 
-	filesys := NewFS(f)
-	server := fusefs.New(c, nil)
+	c, err := fuse.Mount(mountpoint, mountOptions(VFS, opt.DeviceName, opt)...)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	filesys := NewFS(VFS, opt)
+	filesys.server = fusefs.New(c, nil)
 
 	// Serve the mount point in the background returning error to errChan
 	errChan := make(chan error, 1)
 	go func() {
-		err := server.Serve(filesys)
+		err := filesys.server.Serve(filesys)
 		closeErr := c.Close()
 		if err == nil {
 			err = closeErr
@@ -103,72 +106,11 @@ func mount(f fs.Fs, mountpoint string) (*vfs.VFS, <-chan error, func() error, er
 		errChan <- err
 	}()
 
-	// check if the mount process has an error to report
-	<-c.Ready
-	if err := c.MountError; err != nil {
-		return nil, nil, nil, err
-	}
-
 	unmount := func() error {
 		// Shutdown the VFS
 		filesys.VFS.Shutdown()
 		return fuse.Unmount(mountpoint)
 	}
 
-	return filesys.VFS, errChan, unmount, nil
-}
-
-// Mount mounts the remote at mountpoint.
-//
-// If noModTime is set then it
-func Mount(f fs.Fs, mountpoint string) error {
-	if mountlib.DebugFUSE {
-		fuse.Debug = func(msg interface{}) {
-			fs.Debugf("fuse", "%v", msg)
-		}
-	}
-
-	// Mount it
-	FS, errChan, unmount, err := mount(f, mountpoint)
-	if err != nil {
-		return errors.Wrap(err, "failed to mount FUSE fs")
-	}
-
-	sigInt := make(chan os.Signal, 1)
-	signal.Notify(sigInt, syscall.SIGINT, syscall.SIGTERM)
-	sigHup := make(chan os.Signal, 1)
-	signal.Notify(sigHup, syscall.SIGHUP)
-	atexit.IgnoreSignals()
-
-	if err := sdnotify.Ready(); err != nil && err != sdnotify.ErrSdNotifyNoSocket {
-		return errors.Wrap(err, "failed to notify systemd")
-	}
-
-waitloop:
-	for {
-		select {
-		// umount triggered outside the app
-		case err = <-errChan:
-			break waitloop
-		// Program abort: umount
-		case <-sigInt:
-			err = unmount()
-			break waitloop
-		// user sent SIGHUP to clear the cache
-		case <-sigHup:
-			root, err := FS.Root()
-			if err != nil {
-				fs.Errorf(f, "Error reading root: %v", err)
-			} else {
-				root.ForgetAll()
-			}
-		}
-	}
-
-	_ = sdnotify.Stopping()
-	if err != nil {
-		return errors.Wrap(err, "failed to umount FUSE fs")
-	}
-
-	return nil
+	return errChan, unmount, nil
 }

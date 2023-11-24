@@ -1,12 +1,9 @@
-// +build go1.11
-
 package main
 
 import (
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -17,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/lib/file"
 	"github.com/skratchdot/open-golang/open"
 )
 
@@ -70,14 +68,14 @@ func NewReport() *Report {
 	r.DateTime = r.StartTime.Format(timeFormat)
 
 	// Find previous log directory if possible
-	names, err := ioutil.ReadDir(*outputDir)
+	names, err := os.ReadDir(*outputDir)
 	if err == nil && len(names) > 0 {
 		r.Previous = names[len(names)-1].Name()
 	}
 
 	// Create output directory for logs and report
 	r.LogDir = path.Join(*outputDir, r.DateTime)
-	err = os.MkdirAll(r.LogDir, 0777)
+	err = file.MkdirAll(r.LogDir, 0777)
 	if err != nil {
 		log.Fatalf("Failed to make log directory: %v", err)
 	}
@@ -124,7 +122,7 @@ func (r *Report) RecordResult(t *Run) {
 	}
 }
 
-// Title returns a human readable summary title for the Report
+// Title returns a human-readable summary title for the Report
 func (r *Report) Title() string {
 	if r.AllPassed() {
 		return fmt.Sprintf("PASS: All tests finished OK in %v", r.Duration)
@@ -142,7 +140,7 @@ func (r *Report) LogSummary() {
 	if !r.AllPassed() {
 		for _, t := range r.Failed {
 			log.Printf("  * %s", toShell(t.nextCmdLine()))
-			log.Printf("    * Failed tests: %v", t.failedTests)
+			log.Printf("    * Failed tests: %v", t.FailedTests)
 		}
 	}
 }
@@ -153,7 +151,7 @@ func (r *Report) LogJSON() {
 	if err != nil {
 		log.Fatalf("Failed to marshal data for index.json: %v", err)
 	}
-	err = ioutil.WriteFile(path.Join(r.LogDir, "index.json"), out, 0666)
+	err = os.WriteFile(path.Join(r.LogDir, "index.json"), out, 0666)
 	if err != nil {
 		log.Fatalf("Failed to write index.json: %v", err)
 	}
@@ -266,7 +264,7 @@ a:focus {
 <td>{{ if ne $prevRemote .Remote }}{{ .Remote }}{{ end }}{{ $prevRemote = .Remote }}</td>
 <td>{{ .Path }}</td>
 <td><span class="{{ .FastList }}">{{ .FastList }}</span></td>
-<td>{{ .FailedTests }}</td>
+<td>{{ .FailedTestsCSV }}</td>
 <td>{{ range $i, $v := .Logs }}<a href="{{ $v }}">#{{ $i }}</a> {{ end }}</td>
 </tr>
 {{ end }}

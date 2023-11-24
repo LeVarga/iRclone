@@ -1,3 +1,4 @@
+// Package koofr provides an interface to the Koofr storage system.
 package koofr
 
 import (
@@ -12,67 +13,100 @@ import (
 	"time"
 
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
 	"github.com/rclone/rclone/fs/config/obscure"
-	"github.com/rclone/rclone/fs/encodings"
+	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/lib/encoder"
 
 	httpclient "github.com/koofr/go-httpclient"
 	koofrclient "github.com/koofr/go-koofrclient"
 )
 
-const enc = encodings.Koofr
-
 // Register Fs with rclone
 func init() {
 	fs.Register(&fs.RegInfo{
 		Name:        "koofr",
-		Description: "Koofr",
+		Description: "Koofr, Digi Storage and other Koofr-compatible storage providers",
 		NewFs:       NewFs,
-		Options: []fs.Option{
-			{
-				Name:     "endpoint",
-				Help:     "The Koofr API endpoint to use",
-				Default:  "https://app.koofr.net",
-				Required: true,
-				Advanced: true,
+		Options: []fs.Option{{
+			Name: fs.ConfigProvider,
+			Help: "Choose your storage provider.",
+			// NOTE if you add a new provider here, then add it in the
+			// setProviderDefaults() function and update options accordingly
+			Examples: []fs.OptionExample{{
+				Value: "koofr",
+				Help:  "Koofr, https://app.koofr.net/",
 			}, {
-				Name:     "mountid",
-				Help:     "Mount ID of the mount to use. If omitted, the primary mount is used.",
-				Required: false,
-				Default:  "",
-				Advanced: true,
+				Value: "digistorage",
+				Help:  "Digi Storage, https://storage.rcs-rds.ro/",
 			}, {
-				Name:     "setmtime",
-				Help:     "Does the backend support setting modification time. Set this to false if you use a mount ID that points to a Dropbox or Amazon Drive backend.",
-				Default:  true,
-				Required: true,
-				Advanced: true,
-			}, {
-				Name:     "user",
-				Help:     "Your Koofr user name",
-				Required: true,
-			}, {
-				Name:       "password",
-				Help:       "Your Koofr password for rclone (generate one at https://app.koofr.net/app/admin/preferences/password)",
-				IsPassword: true,
-				Required:   true,
-			},
-		},
+				Value: "other",
+				Help:  "Any other Koofr API compatible storage service",
+			}},
+		}, {
+			Name:     "endpoint",
+			Help:     "The Koofr API endpoint to use.",
+			Provider: "other",
+			Required: true,
+		}, {
+			Name:     "mountid",
+			Help:     "Mount ID of the mount to use.\n\nIf omitted, the primary mount is used.",
+			Advanced: true,
+		}, {
+			Name:     "setmtime",
+			Help:     "Does the backend support setting modification time.\n\nSet this to false if you use a mount ID that points to a Dropbox or Amazon Drive backend.",
+			Default:  true,
+			Advanced: true,
+		}, {
+			Name:      "user",
+			Help:      "Your user name.",
+			Required:  true,
+			Sensitive: true,
+		}, {
+			Name:       "password",
+			Help:       "Your password for rclone (generate one at https://app.koofr.net/app/admin/preferences/password).",
+			Provider:   "koofr",
+			IsPassword: true,
+			Required:   true,
+		}, {
+			Name:       "password",
+			Help:       "Your password for rclone (generate one at https://storage.rcs-rds.ro/app/admin/preferences/password).",
+			Provider:   "digistorage",
+			IsPassword: true,
+			Required:   true,
+		}, {
+			Name:       "password",
+			Help:       "Your password for rclone (generate one at your service's settings page).",
+			Provider:   "other",
+			IsPassword: true,
+			Required:   true,
+		}, {
+			Name:     config.ConfigEncoding,
+			Help:     config.ConfigEncodingHelp,
+			Advanced: true,
+			// Encode invalid UTF-8 bytes as json doesn't handle them properly.
+			Default: (encoder.Display |
+				encoder.EncodeBackSlash |
+				encoder.EncodeInvalidUtf8),
+		}},
 	})
 }
 
 // Options represent the configuration of the Koofr backend
 type Options struct {
-	Endpoint string `config:"endpoint"`
-	MountID  string `config:"mountid"`
-	User     string `config:"user"`
-	Password string `config:"password"`
-	SetMTime bool   `config:"setmtime"`
+	Provider string               `config:"provider"`
+	Endpoint string               `config:"endpoint"`
+	MountID  string               `config:"mountid"`
+	User     string               `config:"user"`
+	Password string               `config:"password"`
+	SetMTime bool                 `config:"setmtime"`
+	Enc      encoder.MultiEncoder `config:"encoding"`
 }
 
-// A Fs is a representation of a remote Koofr Fs
+// An Fs is a representation of a remote Koofr Fs
 type Fs struct {
 	name     string
 	mountID  string
@@ -243,23 +277,50 @@ func (f *Fs) Hashes() hash.Set {
 	return hash.Set(hash.MD5)
 }
 
-// fullPath constructs a full, absolute path from a Fs root relative path,
+// fullPath constructs a full, absolute path from an Fs root relative path,
 func (f *Fs) fullPath(part string) string {
-	return enc.FromStandardPath(path.Join("/", f.root, part))
+	return f.opt.Enc.FromStandardPath(path.Join("/", f.root, part))
 }
 
-// NewFs constructs a new filesystem given a root path and configuration options
-func NewFs(name, root string, m configmap.Mapper) (ff fs.Fs, err error) {
+func setProviderDefaults(opt *Options) {
+	// handle old, provider-less configs
+	if opt.Provider == "" {
+		if opt.Endpoint == "" || strings.HasPrefix(opt.Endpoint, "https://app.koofr.net") {
+			opt.Provider = "koofr"
+		} else if strings.HasPrefix(opt.Endpoint, "https://storage.rcs-rds.ro") {
+			opt.Provider = "digistorage"
+		} else {
+			opt.Provider = "other"
+		}
+	}
+	// now assign an endpoint
+	if opt.Provider == "koofr" {
+		opt.Endpoint = "https://app.koofr.net"
+	} else if opt.Provider == "digistorage" {
+		opt.Endpoint = "https://storage.rcs-rds.ro"
+	}
+}
+
+// NewFs constructs a new filesystem given a root path and rclone configuration options
+func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (ff fs.Fs, err error) {
 	opt := new(Options)
 	err = configstruct.Set(m, opt)
 	if err != nil {
 		return nil, err
 	}
+	setProviderDefaults(opt)
+	return NewFsFromOptions(ctx, name, root, opt)
+}
+
+// NewFsFromOptions constructs a new filesystem given a root path and internal configuration options
+func NewFsFromOptions(ctx context.Context, name, root string, opt *Options) (ff fs.Fs, err error) {
 	pass, err := obscure.Reveal(opt.Password)
 	if err != nil {
 		return nil, err
 	}
-	client := koofrclient.NewKoofrClient(opt.Endpoint, false)
+	httpClient := httpclient.New()
+	httpClient.Client = fshttp.NewClient(ctx)
+	client := koofrclient.NewKoofrClientWithHTTPClient(opt.Endpoint, httpClient)
 	basicAuth := fmt.Sprintf("Basic %s",
 		base64.StdEncoding.EncodeToString([]byte(opt.User+":"+pass)))
 	client.HTTPClient.Headers.Set("Authorization", basicAuth)
@@ -278,7 +339,7 @@ func NewFs(name, root string, m configmap.Mapper) (ff fs.Fs, err error) {
 		DuplicateFiles:          false,
 		BucketBased:             false,
 		CanHaveEmptyDirectories: true,
-	}).Fill(f)
+	}).Fill(ctx, f)
 	for _, m := range mounts {
 		if opt.MountID != "" {
 			if m.Id == opt.MountID {
@@ -292,11 +353,11 @@ func NewFs(name, root string, m configmap.Mapper) (ff fs.Fs, err error) {
 	}
 	if f.mountID == "" {
 		if opt.MountID == "" {
-			return nil, errors.New("Failed to find primary mount")
+			return nil, errors.New("failed to find primary mount")
 		}
-		return nil, errors.New("Failed to find mount " + opt.MountID)
+		return nil, errors.New("failed to find mount " + opt.MountID)
 	}
-	rootFile, err := f.client.FilesInfo(f.mountID, enc.FromStandardPath("/"+f.root))
+	rootFile, err := f.client.FilesInfo(f.mountID, f.opt.Enc.FromStandardPath("/"+f.root))
 	if err == nil && rootFile.Type != "dir" {
 		f.root = dir(f.root)
 		err = fs.ErrorIsFile
@@ -314,9 +375,9 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 	}
 	entries = make([]fs.DirEntry, len(files))
 	for i, file := range files {
-		remote := path.Join(dir, enc.ToStandardName(file.Name))
+		remote := path.Join(dir, f.opt.Enc.ToStandardName(file.Name))
 		if file.Type == "dir" {
-			entries[i] = fs.NewDir(remote, time.Unix(0, 0))
+			entries[i] = fs.NewDir(remote, time.Time{})
 		} else {
 			entries[i] = &Object{
 				fs:     f,
@@ -335,7 +396,7 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (obj fs.Object, err e
 		return nil, translateErrorsObject(err)
 	}
 	if info.Type == "dir" {
-		return nil, fs.ErrorNotAFile
+		return nil, fs.ErrorIsDir
 	}
 	return &Object{
 		fs:     f,
@@ -412,7 +473,7 @@ func translateErrorsObject(err error) error {
 }
 
 // mkdir creates a directory at the given remote path. Creates ancestors if
-// neccessary
+// necessary
 func (f *Fs) mkdir(fullPath string) error {
 	if fullPath == "/" {
 		return nil
@@ -525,7 +586,7 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 	return nil
 }
 
-// About reports space usage (with a MB precision)
+// About reports space usage (with a MiB precision)
 func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
 	mount, err := f.client.MountsDetails(f.mountID)
 	if err != nil {
@@ -594,10 +655,30 @@ func createLink(c *koofrclient.KoofrClient, mountID string, path string) (*link,
 }
 
 // PublicLink creates a public link to the remote path
-func (f *Fs) PublicLink(ctx context.Context, remote string) (string, error) {
+func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, unlink bool) (string, error) {
 	linkData, err := createLink(f.client, f.mountID, f.fullPath(remote))
 	if err != nil {
 		return "", translateErrorsDir(err)
 	}
-	return linkData.ShortURL, nil
+
+	// URL returned by API looks like following:
+	//
+	// https://app.koofr.net/links/35d9fb92-74a3-4930-b4ed-57f123bfb1a6
+	//
+	// Direct url looks like following:
+	//
+	// https://app.koofr.net/content/links/39a6cc01-3b23-477a-8059-c0fb3b0f15de/files/get?path=%2F
+	//
+	// I am not sure about meaning of "path" parameter; in my experiments
+	// it is always "%2F", and omitting it or putting any other value
+	// results in 404.
+	//
+	// There is one more quirk: direct link to file in / returns that file,
+	// direct link to file somewhere else in hierarchy returns zip archive
+	// with one member.
+	link := linkData.URL
+	link = strings.ReplaceAll(link, "/links", "/content/links")
+	link += "/files/get?path=%2F"
+
+	return link, nil
 }

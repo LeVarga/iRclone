@@ -1,4 +1,5 @@
-// +build !plan9
+//go:build !plan9 && !js
+// +build !plan9,!js
 
 package cache
 
@@ -7,7 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -166,7 +167,7 @@ func (p *plexConnector) listenWebsocket() {
 								continue
 							}
 							var data []byte
-							data, err = ioutil.ReadAll(resp.Body)
+							data, err = io.ReadAll(resp.Body)
 							if err != nil {
 								continue
 							}
@@ -212,7 +213,7 @@ func (p *plexConnector) authenticate() error {
 	var data map[string]interface{}
 	err = json.NewDecoder(resp.Body).Decode(&data)
 	if err != nil {
-		return fmt.Errorf("failed to obtain token: %v", err)
+		return fmt.Errorf("failed to obtain token: %w", err)
 	}
 	tokenGen, ok := get(data, "user", "authToken")
 	if !ok {

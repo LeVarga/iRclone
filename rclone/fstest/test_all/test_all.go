@@ -1,10 +1,7 @@
-// +build go1.11
-
 // Run tests for all the remotes.  Run this with package names which
 // need integration testing.
 //
 // See the `test` target in the Makefile.
-//
 package main
 
 /* FIXME
@@ -24,6 +21,7 @@ import (
 	"time"
 
 	_ "github.com/rclone/rclone/backend/all" // import all fs
+	"github.com/rclone/rclone/fs/config/configfile"
 	"github.com/rclone/rclone/lib/pacer"
 )
 
@@ -31,12 +29,12 @@ var (
 	// Flags
 	maxTries     = flag.Int("maxtries", 5, "Number of times to try each test")
 	maxN         = flag.Int("n", 20, "Maximum number of tests to run at once")
-	testRemotes  = flag.String("remotes", "", "Comma separated list of remotes to test, eg 'TestSwift:,TestS3'")
-	testBackends = flag.String("backends", "", "Comma separated list of backends to test, eg 's3,googlecloudstorage")
-	testTests    = flag.String("tests", "", "Comma separated list of tests to test, eg 'fs/sync,fs/operations'")
+	testRemotes  = flag.String("remotes", "", "Comma separated list of remotes to test, e.g. 'TestSwift:,TestS3'")
+	testBackends = flag.String("backends", "", "Comma separated list of backends to test, e.g. 's3,googlecloudstorage")
+	testTests    = flag.String("tests", "", "Comma separated list of tests to test, e.g. 'fs/sync,fs/operations'")
 	clean        = flag.Bool("clean", false, "Instead of testing, clean all left over test directories")
 	runOnly      = flag.String("run", "", "Run only those tests matching the regexp supplied")
-	timeout      = flag.Duration("timeout", 30*time.Minute, "Maximum time to run each test for before giving up")
+	timeout      = flag.Duration("timeout", 60*time.Minute, "Maximum time to run each test for before giving up")
 	configFile   = flag.String("config", "fstest/test_all/config.yaml", "Path to config file")
 	outputDir    = flag.String("output", path.Join(os.TempDir(), "rclone-integration-tests"), "Place to store results")
 	emailReport  = flag.String("email", "", "Set to email the report to the address supplied")
@@ -44,12 +42,13 @@ var (
 	urlBase      = flag.String("url-base", "https://pub.rclone.org/integration-tests/", "Base for the online version")
 	uploadPath   = flag.String("upload", "", "Set this to an rclone path to upload the results here")
 	verbose      = flag.Bool("verbose", false, "Set to enable verbose logging in the tests")
+	listRetries  = flag.Int("list-retries", -1, "Number or times to retry listing - set to override the default")
 )
 
 // if matches then is definitely OK in the shell
 var shellOK = regexp.MustCompile("^[A-Za-z0-9./_:-]+$")
 
-// converts a argv style input into a shell command
+// converts an argv style input into a shell command
 func toShell(args []string) (result string) {
 	for _, arg := range args {
 		if result != "" {
@@ -71,9 +70,10 @@ func main() {
 		log.Println("test_all should be run from the root of the rclone source code")
 		log.Fatal(err)
 	}
+	configfile.Install()
 
 	// Seed the random number generator
-	rand.Seed(time.Now().UTC().UnixNano())
+	randInstance := rand.New(rand.NewSource(time.Now().UTC().UnixNano()))
 
 	// Filter selection
 	if *testRemotes != "" {
@@ -88,7 +88,7 @@ func main() {
 
 	// Just clean the directories if required
 	if *clean {
-		err := cleanRemotes(conf.Remotes())
+		err := cleanRemotes(conf)
 		if err != nil {
 			log.Fatalf("Failed to clean: %v", err)
 		}
@@ -103,7 +103,7 @@ func main() {
 
 	// Runs we will do for this test in random order
 	runs := conf.MakeRuns()
-	rand.Shuffle(len(runs), runs.Swap)
+	randInstance.Shuffle(len(runs), runs.Swap)
 
 	// Create Report
 	report := NewReport()

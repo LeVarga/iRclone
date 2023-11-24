@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rclone/rclone/lib/errors"
+	liberrors "github.com/rclone/rclone/lib/errors"
 )
 
 // State represents the public Pacer state that will be passed to the
@@ -61,7 +61,7 @@ func MaxConnectionsOption(maxConnections int) Option {
 	return func(p *pacerOptions) { p.maxConnections = maxConnections }
 }
 
-// InvokerOption sets a InvokerFunc for the new Pacer.
+// InvokerOption sets an InvokerFunc for the new Pacer.
 func InvokerOption(invoker InvokerFunc) Option {
 	return func(p *pacerOptions) { p.invoker = invoker }
 }
@@ -75,7 +75,7 @@ type Paced func() (bool, error)
 // New returns a Pacer with sensible defaults.
 func New(options ...Option) *Pacer {
 	opts := pacerOptions{
-		maxConnections: 10,
+		maxConnections: 0,
 		retries:        3,
 	}
 	for _, o := range options {
@@ -103,7 +103,7 @@ func New(options ...Option) *Pacer {
 // SetMaxConnections sets the maximum number of concurrent connections.
 // Setting the value to 0 will allow unlimited number of connections.
 // Should not be changed once you have started calling the pacer.
-// By default this will be set to fs.Config.Checkers.
+// By default this will be 0.
 func (p *Pacer) SetMaxConnections(n int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -148,7 +148,7 @@ func (p *Pacer) ModifyCalculator(f func(Calculator)) {
 
 // Start a call to the API
 //
-// This must be called as a pair with endCall
+// This must be called as a pair with endCall.
 //
 // This waits for the pacer token
 func (p *Pacer) beginCall() {
@@ -250,10 +250,10 @@ func RetryAfterError(err error, retryAfter time.Duration) error {
 	}
 }
 
-// IsRetryAfter returns true if the the error or any of it's Cause's is an error
+// IsRetryAfter returns true if the error or any of it's Cause's is an error
 // returned by RetryAfterError. It also returns the associated Duration if possible.
 func IsRetryAfter(err error) (retryAfter time.Duration, isRetryAfter bool) {
-	errors.Walk(err, func(err error) bool {
+	liberrors.Walk(err, func(err error) bool {
 		if r, ok := err.(*retryAfterError); ok {
 			retryAfter, isRetryAfter = r.retryAfter, true
 			return true

@@ -3,22 +3,22 @@
 //
 // We skip tests on platforms with troublesome character mappings
 
-//+build !windows,!darwin,!plan9
+//go:build !windows && !darwin && !plan9
+// +build !windows,!darwin,!plan9
 
 package ftp
 
 import (
-	"fmt"
+	"context"
 	"testing"
 
-	ftp "github.com/goftp/server"
 	_ "github.com/rclone/rclone/backend/local"
 	"github.com/rclone/rclone/cmd/serve/servetest"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/obscure"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	ftp "goftp.io/server/v2"
 )
 
 const (
@@ -40,7 +40,7 @@ func TestFTP(t *testing.T) {
 		opt.BasicUser = testUSER
 		opt.BasicPass = testPASS
 
-		w, err := newServer(f, &opt)
+		w, err := newServer(context.Background(), f, &opt)
 		assert.NoError(t, err)
 
 		quit := make(chan struct{})
@@ -69,11 +69,4 @@ func TestFTP(t *testing.T) {
 	}
 
 	servetest.Run(t, "ftp", start)
-}
-
-func TestFindID(t *testing.T) {
-	id, err := findID([]byte("TestFindID("))
-	require.NoError(t, err)
-	// id should be the argument to this function
-	assert.Equal(t, fmt.Sprintf("%p", t), id)
 }

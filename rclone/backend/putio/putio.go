@@ -1,15 +1,17 @@
+// Package putio provides an interface to the put.io storage system.
 package putio
 
 import (
-	"log"
+	"context"
 	"regexp"
 	"time"
 
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/obscure"
-	"github.com/rclone/rclone/fs/encodings"
 	"github.com/rclone/rclone/lib/dircache"
+	"github.com/rclone/rclone/lib/encoder"
 	"github.com/rclone/rclone/lib/oauthutil"
 	"golang.org/x/oauth2"
 )
@@ -25,7 +27,6 @@ canReadUnnormalized   = true
 canReadRenormalized   = true
 canStream = false
 */
-const enc = encodings.Putio
 
 // Constants
 const (
@@ -33,8 +34,9 @@ const (
 	rcloneObscuredClientSecret = "cMwrjWVmrHZp3gf1ZpCrlyGAmPpB-YY5BbVnO1fj-G9evcd8"
 	minSleep                   = 10 * time.Millisecond
 	maxSleep                   = 2 * time.Second
-	decayConstant              = 2 // bigger for slower decay, exponential
-	defaultChunkSize           = 48 * fs.MebiByte
+	decayConstant              = 1 // bigger for slower decay, exponential
+	defaultChunkSize           = 48 * fs.Mebi
+	defaultRateLimitSleep      = 60 * time.Second
 )
 
 var (
@@ -59,13 +61,29 @@ func init() {
 		Name:        "putio",
 		Description: "Put.io",
 		NewFs:       NewFs,
-		Config: func(name string, m configmap.Mapper) {
-			err := oauthutil.ConfigNoOffline("putio", name, m, putioConfig)
-			if err != nil {
-				log.Fatalf("Failed to configure token: %v", err)
-			}
+		Config: func(ctx context.Context, name string, m configmap.Mapper, config fs.ConfigIn) (*fs.ConfigOut, error) {
+			return oauthutil.ConfigOut("", &oauthutil.Options{
+				OAuth2Config: putioConfig,
+				NoOffline:    true,
+			})
 		},
+		Options: append(oauthutil.SharedOptions, []fs.Option{{
+			Name:     config.ConfigEncoding,
+			Help:     config.ConfigEncodingHelp,
+			Advanced: true,
+			// Note that \ is renamed to -
+			//
+			// Encode invalid UTF-8 bytes as json doesn't handle them properly.
+			Default: (encoder.Display |
+				encoder.EncodeBackSlash |
+				encoder.EncodeInvalidUtf8),
+		}}...),
 	})
+}
+
+// Options defines the configuration for this backend
+type Options struct {
+	Enc encoder.MultiEncoder `config:"encoding"`
 }
 
 // Check the interfaces are satisfied

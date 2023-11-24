@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"io/ioutil"
 	"testing"
 	"time"
 
@@ -110,7 +109,7 @@ func TestMemoryObject(t *testing.T) {
 	assert.Equal(t, newNow, o.ModTime(context.Background()))
 
 	checkOpen := func(rc io.ReadCloser, expected string) {
-		actual, err := ioutil.ReadAll(rc)
+		actual, err := io.ReadAll(rc)
 		assert.NoError(t, err)
 		err = rc.Close()
 		assert.NoError(t, err)
@@ -153,7 +152,7 @@ func TestMemoryObject(t *testing.T) {
 	err = o.Update(context.Background(), newContent, src)
 	assert.NoError(t, err)
 	checkContent(o, newStr)
-	assert.Equal(t, "Rutaba", string(content)) // check we didn't re-use the buffer
+	assert.Equal(t, "Rutaba", string(content)) // check we didn't reuse the buffer
 
 	// now try streaming
 	newStr = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"

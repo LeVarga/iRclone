@@ -1,5 +1,10 @@
 package fichier
 
+// FileInfoRequest is the request structure of the corresponding request
+type FileInfoRequest struct {
+	URL string `json:"url"`
+}
+
 // ListFolderRequest is the request structure of the corresponding request
 type ListFolderRequest struct {
 	FolderID int `json:"folder_id"`
@@ -14,6 +19,8 @@ type ListFilesRequest struct {
 type DownloadRequest struct {
 	URL    string `json:"url"`
 	Single int    `json:"single"`
+	Pass   string `json:"pass,omitempty"`
+	CDN    int    `json:"cdn,omitempty"`
 }
 
 // RemoveFolderRequest is the request structure of the corresponding request
@@ -47,6 +54,81 @@ type MakeFolderRequest struct {
 type MakeFolderResponse struct {
 	Name     string `json:"name"`
 	FolderID int    `json:"folder_id"`
+}
+
+// MoveFileRequest is the request structure of the corresponding request
+type MoveFileRequest struct {
+	URLs     []string `json:"urls"`
+	FolderID int      `json:"destination_folder_id"`
+	Rename   string   `json:"rename,omitempty"`
+}
+
+// MoveFileResponse is the response structure of the corresponding request
+type MoveFileResponse struct {
+	Status  string   `json:"status"`
+	Message string   `json:"message"`
+	URLs    []string `json:"urls"`
+}
+
+// MoveDirRequest is the request structure of the corresponding request
+type MoveDirRequest struct {
+	FolderID            int    `json:"folder_id"`
+	DestinationFolderID int    `json:"destination_folder_id,omitempty"`
+	DestinationUser     string `json:"destination_user"`
+	Rename              string `json:"rename,omitempty"`
+}
+
+// MoveDirResponse is the response structure of the corresponding request
+type MoveDirResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	OldName string `json:"old_name"`
+	NewName string `json:"new_name"`
+}
+
+// CopyFileRequest is the request structure of the corresponding request
+type CopyFileRequest struct {
+	URLs     []string `json:"urls"`
+	FolderID int      `json:"folder_id"`
+	Rename   string   `json:"rename,omitempty"`
+}
+
+// CopyFileResponse is the response structure of the corresponding request
+type CopyFileResponse struct {
+	Status  string     `json:"status"`
+	Message string     `json:"message"`
+	Copied  int        `json:"copied"`
+	URLs    []FileCopy `json:"urls"`
+}
+
+// FileCopy is used in the CopyFileResponse
+type FileCopy struct {
+	FromURL string `json:"from_url"`
+	ToURL   string `json:"to_url"`
+}
+
+// RenameFileURL is the data structure to rename a single file
+type RenameFileURL struct {
+	URL      string `json:"url"`
+	Filename string `json:"filename"`
+}
+
+// RenameFileRequest is the request structure of the corresponding request
+type RenameFileRequest struct {
+	URLs   []RenameFileURL `json:"urls"`
+	Pretty int             `json:"pretty"`
+}
+
+// RenameFileResponse is the response structure of the corresponding request
+type RenameFileResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	Renamed int    `json:"renamed"`
+	URLs    []struct {
+		URL         string `json:"url"`
+		OldFilename string `json:"old_filename"`
+		NewFilename string `json:"new_filename"`
+	} `json:"urls"`
 }
 
 // GetUploadNodeResponse is the response structure of the corresponding request
@@ -86,7 +168,6 @@ type EndFileUploadResponse struct {
 
 // File is the structure how 1Fichier returns a File
 type File struct {
-	ACL         int    `json:"acl"`
 	CDN         int    `json:"cdn"`
 	Checksum    string `json:"checksum"`
 	ContentType string `json:"content-type"`
@@ -117,4 +198,35 @@ type FoldersList struct {
 	Name       string   `json:"name"`
 	Status     string   `json:"Status"`
 	SubFolders []Folder `json:"sub_folders"`
+}
+
+// AccountInfo is the structure how 1Fichier returns user info
+type AccountInfo struct {
+	StatsDate               string `json:"stats_date"`
+	MailRM                  string `json:"mail_rm"`
+	DefaultQuota            int64  `json:"default_quota"`
+	UploadForbidden         string `json:"upload_forbidden"`
+	PageLimit               int    `json:"page_limit"`
+	ColdStorage             int64  `json:"cold_storage"`
+	Status                  string `json:"status"`
+	UseCDN                  string `json:"use_cdn"`
+	AvailableColdStorage    int64  `json:"available_cold_storage"`
+	DefaultPort             string `json:"default_port"`
+	DefaultDomain           int    `json:"default_domain"`
+	Email                   string `json:"email"`
+	DownloadMenu            string `json:"download_menu"`
+	FTPDID                  int    `json:"ftp_did"`
+	DefaultPortFiles        string `json:"default_port_files"`
+	FTPReport               string `json:"ftp_report"`
+	OverQuota               int64  `json:"overquota"`
+	AvailableStorage        int64  `json:"available_storage"`
+	CDN                     string `json:"cdn"`
+	Offer                   string `json:"offer"`
+	SubscriptionEnd         string `json:"subscription_end"`
+	TFA                     string `json:"2fa"`
+	AllowedColdStorage      int64  `json:"allowed_cold_storage"`
+	HotStorage              int64  `json:"hot_storage"`
+	DefaultColdStorageQuota int64  `json:"default_cold_storage_quota"`
+	FTPMode                 string `json:"ftp_mode"`
+	RUReport                string `json:"ru_report"`
 }

@@ -3,13 +3,14 @@
 package terminal
 
 import (
+	"context"
 	"io"
 	"os"
 	"runtime"
 	"sync"
 
 	colorable "github.com/mattn/go-colorable"
-	"golang.org/x/crypto/ssh/terminal"
+	"github.com/rclone/rclone/fs"
 )
 
 // VT100 codes
@@ -61,6 +62,9 @@ const (
 	HiMagentaBg = "\x1b[105m"
 	HiCyanBg    = "\x1b[106m"
 	HiWhiteBg   = "\x1b[107m"
+
+	ChangeTitle = "\033]0;"
+	BEL         = "\007"
 )
 
 var (
@@ -71,13 +75,21 @@ var (
 // Start the terminal - must be called before use
 func Start() {
 	once.Do(func() {
+		ci := fs.GetConfig(context.Background())
+
 		f := os.Stdout
-		if !terminal.IsTerminal(int(f.Fd())) {
-			// If stdout not a tty then remove escape codes
-			Out = colorable.NewNonColorable(f)
+		if !IsTerminal(int(f.Fd())) {
+			// If stdout is not a tty, remove escape codes EXCEPT if terminal color mode equals "ALWAYS"
+			if ci.TerminalColorMode == fs.TerminalColorModeAlways {
+				Out = colorable.NewColorable(f)
+			} else {
+				Out = colorable.NewNonColorable(f)
+			}
 		} else if runtime.GOOS == "windows" && os.Getenv("TERM") != "" {
 			// If TERM is set just use stdout
 			Out = f
+		} else if ci.TerminalColorMode == fs.TerminalColorModeNever {
+			Out = colorable.NewNonColorable(f)
 		} else {
 			Out = colorable.NewColorable(f)
 		}
@@ -89,18 +101,8 @@ func WriteString(s string) {
 	Write([]byte(s))
 }
 
-// GetSize reads the dimensions of the current terminal or returns a
-// sensible default
-func GetSize() (w, h int) {
-	w, h, err := terminal.GetSize(int(os.Stdout.Fd()))
-	if err != nil {
-		w, h = 80, 25
-	}
-	return w, h
-}
-
 // Out is an io.Writer which can be used to write to the terminal
-// eg for use with fmt.Fprintf(terminal.Out, "terminal fun: %d\n", n)
+// e.g. for use with fmt.Fprintf(terminal.Out, "terminal fun: %d\n", n)
 var Out io.Writer
 
 // Write sends out to the VT100 terminal.
@@ -108,4 +110,15 @@ var Out io.Writer
 func Write(out []byte) {
 	Start()
 	_, _ = Out.Write(out)
+}
+
+// EnableColorsStdout enable colors if possible.
+// This enables virtual terminal processing on Windows 10 console,
+// adding native support for VT100 escape codes. When this terminal
+// package is used for output, the result is that the colorable library
+// don't have to decode the escapes and explicitly write text with color
+// formatting to the console using Windows API functions, but can simply
+// relay everything to stdout.
+func EnableColorsStdout() {
+	_ = colorable.EnableColorsStdout(nil)
 }

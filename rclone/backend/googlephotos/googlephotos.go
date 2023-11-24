@@ -6,9 +6,9 @@ package googlephotos
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	golog "log"
 	"net/http"
 	"net/url"
 	"path"
@@ -18,7 +18,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/backend/googlephotos/api"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
@@ -30,6 +29,7 @@ import (
 	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/fs/log"
+	"github.com/rclone/rclone/lib/encoder"
 	"github.com/rclone/rclone/lib/oauthutil"
 	"github.com/rclone/rclone/lib/pacer"
 	"github.com/rclone/rclone/lib/rest"
@@ -55,6 +55,7 @@ const (
 	minSleep                    = 10 * time.Millisecond
 	scopeReadOnly               = "https://www.googleapis.com/auth/photoslibrary.readonly"
 	scopeReadWrite              = "https://www.googleapis.com/auth/photoslibrary"
+	scopeAccess                 = 2 // position of access scope in list
 )
 
 var (
@@ -63,12 +64,12 @@ var (
 		Scopes: []string{
 			"openid",
 			"profile",
-			scopeReadWrite,
+			scopeReadWrite, // this must be at position scopeAccess
 		},
 		Endpoint:     google.Endpoint,
 		ClientID:     rcloneClientID,
 		ClientSecret: obscure.MustReveal(rcloneEncryptedClientSecret),
-		RedirectURL:  oauthutil.TitleBarRedirectURL,
+		RedirectURL:  oauthutil.RedirectURL,
 	}
 )
 
@@ -79,44 +80,38 @@ func init() {
 		Prefix:      "gphotos",
 		Description: "Google Photos",
 		NewFs:       NewFs,
-		Config: func(name string, m configmap.Mapper) {
+		Config: func(ctx context.Context, name string, m configmap.Mapper, config fs.ConfigIn) (*fs.ConfigOut, error) {
 			// Parse config into Options struct
 			opt := new(Options)
 			err := configstruct.Set(m, opt)
 			if err != nil {
-				fs.Errorf(nil, "Couldn't parse config into struct: %v", err)
-				return
+				return nil, fmt.Errorf("couldn't parse config into struct: %w", err)
 			}
 
-			// Fill in the scopes
-			if opt.ReadOnly {
-				oauthConfig.Scopes[0] = scopeReadOnly
-			} else {
-				oauthConfig.Scopes[0] = scopeReadWrite
+			switch config.State {
+			case "":
+				// Fill in the scopes
+				if opt.ReadOnly {
+					oauthConfig.Scopes[scopeAccess] = scopeReadOnly
+				} else {
+					oauthConfig.Scopes[scopeAccess] = scopeReadWrite
+				}
+				return oauthutil.ConfigOut("warning", &oauthutil.Options{
+					OAuth2Config: oauthConfig,
+				})
+			case "warning":
+				// Warn the user as required by google photos integration
+				return fs.ConfigConfirm("warning_done", true, "config_warning", `Warning
+
+IMPORTANT: All media items uploaded to Google Photos with rclone
+are stored in full resolution at original quality.  These uploads
+will count towards storage in your Google Account.`)
+			case "warning_done":
+				return nil, nil
 			}
-
-			// Do the oauth
-			err = oauthutil.Config("google photos", name, m, oauthConfig)
-			if err != nil {
-				golog.Fatalf("Failed to configure token: %v", err)
-			}
-
-			// Warn the user
-			fmt.Print(`
-*** IMPORTANT: All media items uploaded to Google Photos with rclone
-*** are stored in full resolution at original quality.  These uploads
-*** will count towards storage in your Google Account.
-
-`)
-
+			return nil, fmt.Errorf("unknown state %q", config.State)
 		},
-		Options: []fs.Option{{
-			Name: config.ConfigClientID,
-			Help: "Google Application Client Id\nLeave blank normally.",
-		}, {
-			Name: config.ConfigClientSecret,
-			Help: "Google Application Client Secret\nLeave blank normally.",
-		}, {
+		Options: append(oauthutil.SharedOptions, []fs.Option{{
 			Name:    "read_only",
 			Default: false,
 			Help: `Set to make the Google Photos backend read only.
@@ -134,14 +129,46 @@ rclone mount needs to know the size of files in advance of reading
 them, so setting this flag when using rclone mount is recommended if
 you want to read the media.`,
 			Advanced: true,
-		}},
+		}, {
+			Name:     "start_year",
+			Default:  2000,
+			Help:     `Year limits the photos to be downloaded to those which are uploaded after the given year.`,
+			Advanced: true,
+		}, {
+			Name:    "include_archived",
+			Default: false,
+			Help: `Also view and download archived media.
+
+By default, rclone does not request archived media. Thus, when syncing,
+archived media is not visible in directory listings or transferred.
+
+Note that media in albums is always visible and synced, no matter
+their archive status.
+
+With this flag, archived media are always visible in directory
+listings and transferred.
+
+Without this flag, archived media will not be visible in directory
+listings and won't be transferred.`,
+			Advanced: true,
+		}, {
+			Name:     config.ConfigEncoding,
+			Help:     config.ConfigEncodingHelp,
+			Advanced: true,
+			Default: (encoder.Base |
+				encoder.EncodeCrLf |
+				encoder.EncodeInvalidUtf8),
+		}}...),
 	})
 }
 
 // Options defines the configuration for this backend
 type Options struct {
-	ReadOnly bool `config:"read_only"`
-	ReadSize bool `config:"read_size"`
+	ReadOnly        bool                 `config:"read_only"`
+	ReadSize        bool                 `config:"read_size"`
+	StartYear       int                  `config:"start_year"`
+	IncludeArchived bool                 `config:"include_archived"`
+	Enc             encoder.MultiEncoder `config:"encoding"`
 }
 
 // Fs represents a remote storage server
@@ -151,7 +178,7 @@ type Fs struct {
 	opt        Options                // parsed options
 	features   *fs.Features           // optional features
 	unAuth     *rest.Client           // unauthenticated http client
-	srv        *rest.Client           // the connection to the one drive server
+	srv        *rest.Client           // the connection to the server
 	ts         *oauthutil.TokenSource // token source for oauth2
 	pacer      *fs.Pacer              // To pace the API calls
 	startTime  time.Time              // time Fs was started - used for datestamps
@@ -202,6 +229,15 @@ func (f *Fs) dirTime() time.Time {
 	return f.startTime
 }
 
+// startYear returns the start year
+func (f *Fs) startYear() int {
+	return f.opt.StartYear
+}
+
+func (f *Fs) includeArchived() bool {
+	return f.opt.IncludeArchived
+}
+
 // retryErrorCodes is a slice of error codes that we will retry
 var retryErrorCodes = []int{
 	429, // Too Many Requests.
@@ -214,7 +250,10 @@ var retryErrorCodes = []int{
 
 // shouldRetry returns a boolean as to whether this resp and err
 // deserve to be retried.  It returns the err as a convenience
-func shouldRetry(resp *http.Response, err error) (bool, error) {
+func shouldRetry(ctx context.Context, resp *http.Response, err error) (bool, error) {
+	if fserrors.ContextError(ctx, &err) {
+		return false, err
+	}
 	return fserrors.ShouldRetry(err) || fserrors.ShouldRetryHTTP(resp, retryErrorCodes), err
 }
 
@@ -223,6 +262,10 @@ func errorHandler(resp *http.Response) error {
 	body, err := rest.ReadBody(resp)
 	if err != nil {
 		body = nil
+	}
+	// Google sends 404 messages as images so be prepared for that
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "image/") {
+		body = []byte("Image not found or broken")
 	}
 	var e = api.Error{
 		Details: api.ErrorDetails{
@@ -238,7 +281,7 @@ func errorHandler(resp *http.Response) error {
 }
 
 // NewFs constructs an Fs from the path, bucket:path
-func NewFs(name, root string, m configmap.Mapper) (fs.Fs, error) {
+func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, error) {
 	// Parse config into Options struct
 	opt := new(Options)
 	err := configstruct.Set(m, opt)
@@ -246,10 +289,10 @@ func NewFs(name, root string, m configmap.Mapper) (fs.Fs, error) {
 		return nil, err
 	}
 
-	baseClient := fshttp.NewClient(fs.Config)
-	oAuthClient, ts, err := oauthutil.NewClientWithBaseClient(name, m, oauthConfig, baseClient)
+	baseClient := fshttp.NewClient(ctx)
+	oAuthClient, ts, err := oauthutil.NewClientWithBaseClient(ctx, name, m, oauthConfig, baseClient)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to configure Box")
+		return nil, fmt.Errorf("failed to configure Box: %w", err)
 	}
 
 	root = strings.Trim(path.Clean(root), "/")
@@ -264,14 +307,14 @@ func NewFs(name, root string, m configmap.Mapper) (fs.Fs, error) {
 		unAuth:    rest.NewClient(baseClient),
 		srv:       rest.NewClient(oAuthClient).SetRoot(rootURL),
 		ts:        ts,
-		pacer:     fs.NewPacer(pacer.NewGoogleDrive(pacer.MinSleep(minSleep))),
+		pacer:     fs.NewPacer(ctx, pacer.NewGoogleDrive(pacer.MinSleep(minSleep))),
 		startTime: time.Now(),
 		albums:    map[bool]*albums{},
 		uploaded:  dirtree.New(),
 	}
 	f.features = (&fs.Features{
 		ReadMimeType: true,
-	}).Fill(f)
+	}).Fill(ctx, f)
 	f.srv.SetErrorHandler(errorHandler)
 
 	_, _, pattern := patterns.match(f.root, "", true)
@@ -280,7 +323,7 @@ func NewFs(name, root string, m configmap.Mapper) (fs.Fs, error) {
 		var leaf string
 		f.root, leaf = path.Split(f.root)
 		f.root = strings.TrimRight(f.root, "/")
-		_, err := f.NewObject(context.TODO(), leaf)
+		_, err := f.NewObject(ctx, leaf)
 		if err == nil {
 			return f, fs.ErrorIsFile
 		}
@@ -299,16 +342,16 @@ func (f *Fs) fetchEndpoint(ctx context.Context, name string) (endpoint string, e
 	var openIDconfig map[string]interface{}
 	err = f.pacer.Call(func() (bool, error) {
 		resp, err := f.unAuth.CallJSON(ctx, &opts, nil, &openIDconfig)
-		return shouldRetry(resp, err)
+		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
-		return "", errors.Wrap(err, "couldn't read openID config")
+		return "", fmt.Errorf("couldn't read openID config: %w", err)
 	}
 
 	// Find userinfo endpoint
 	endpoint, ok := openIDconfig[name].(string)
 	if !ok {
-		return "", errors.Errorf("couldn't find %q from openID config", name)
+		return "", fmt.Errorf("couldn't find %q from openID config", name)
 	}
 
 	return endpoint, nil
@@ -328,10 +371,10 @@ func (f *Fs) UserInfo(ctx context.Context) (userInfo map[string]string, err erro
 	}
 	err = f.pacer.Call(func() (bool, error) {
 		resp, err := f.srv.CallJSON(ctx, &opts, nil, &userInfo)
-		return shouldRetry(resp, err)
+		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
-		return nil, errors.Wrap(err, "couldn't read user info")
+		return nil, fmt.Errorf("couldn't read user info: %w", err)
 	}
 	return userInfo, nil
 }
@@ -359,10 +402,10 @@ func (f *Fs) Disconnect(ctx context.Context) (err error) {
 	var res interface{}
 	err = f.pacer.Call(func() (bool, error) {
 		resp, err := f.srv.CallJSON(ctx, &opts, nil, &res)
-		return shouldRetry(resp, err)
+		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
-		return errors.Wrap(err, "couldn't revoke token")
+		return fmt.Errorf("couldn't revoke token: %w", err)
 	}
 	fs.Infof(f, "res = %+v", res)
 	return nil
@@ -446,10 +489,10 @@ func (f *Fs) listAlbums(ctx context.Context, shared bool) (all *albums, err erro
 		var resp *http.Response
 		err = f.pacer.Call(func() (bool, error) {
 			resp, err = f.srv.CallJSON(ctx, &opts, nil, &result)
-			return shouldRetry(resp, err)
+			return shouldRetry(ctx, resp, err)
 		})
 		if err != nil {
-			return nil, errors.Wrap(err, "couldn't list albums")
+			return nil, fmt.Errorf("couldn't list albums: %w", err)
 		}
 		newAlbums := result.Albums
 		if shared {
@@ -463,7 +506,9 @@ func (f *Fs) listAlbums(ctx context.Context, shared bool) (all *albums, err erro
 			lastID = newAlbums[len(newAlbums)-1].ID
 		}
 		for i := range newAlbums {
-			all.add(&newAlbums[i])
+			anAlbum := newAlbums[i]
+			anAlbum.Title = f.opt.Enc.FromStandardPath(anAlbum.Title)
+			all.add(&anAlbum)
 		}
 		if result.NextPageToken == "" {
 			break
@@ -489,16 +534,22 @@ func (f *Fs) list(ctx context.Context, filter api.SearchFilter, fn listFn) (err 
 	}
 	filter.PageSize = listChunks
 	filter.PageToken = ""
+	if filter.AlbumID == "" { // album ID and filters cannot be set together, else error 400 INVALID_ARGUMENT
+		if filter.Filters == nil {
+			filter.Filters = &api.Filters{}
+		}
+		filter.Filters.IncludeArchivedMedia = &f.opt.IncludeArchived
+	}
 	lastID := ""
 	for {
 		var result api.MediaItems
 		var resp *http.Response
 		err = f.pacer.Call(func() (bool, error) {
 			resp, err = f.srv.CallJSON(ctx, &opts, &filter, &result)
-			return shouldRetry(resp, err)
+			return shouldRetry(ctx, resp, err)
 		})
 		if err != nil {
-			return errors.Wrap(err, "couldn't list files")
+			return fmt.Errorf("couldn't list files: %w", err)
 		}
 		items := result.MediaItems
 		if len(items) > 0 && items[0].ID == lastID {
@@ -511,7 +562,7 @@ func (f *Fs) list(ctx context.Context, filter api.SearchFilter, fn listFn) (err 
 		for i := range items {
 			item := &result.MediaItems[i]
 			remote := item.Filename
-			remote = strings.Replace(remote, "/", "／", -1)
+			remote = strings.ReplaceAll(remote, "/", "／")
 			err = fn(remote, item, false)
 			if err != nil {
 				return err
@@ -610,7 +661,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 
 // Put the object into the bucket
 //
-// Copy the reader in to the new object which is returned
+// Copy the reader in to the new object which is returned.
 //
 // The new object may have been created if an error is returned
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
@@ -639,10 +690,10 @@ func (f *Fs) createAlbum(ctx context.Context, albumTitle string) (album *api.Alb
 	var resp *http.Response
 	err = f.pacer.Call(func() (bool, error) {
 		resp, err = f.srv.CallJSON(ctx, &opts, request, &result)
-		return shouldRetry(resp, err)
+		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
-		return nil, errors.Wrap(err, "couldn't create album")
+		return nil, fmt.Errorf("couldn't create album: %w", err)
 	}
 	f.albums[false].add(&result)
 	return &result, nil
@@ -774,7 +825,7 @@ func (o *Object) Size() int64 {
 	}
 	err = o.fs.pacer.Call(func() (bool, error) {
 		resp, err = o.fs.srv.Call(ctx, &opts)
-		return shouldRetry(resp, err)
+		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
 		fs.Debugf(o, "Reading size failed: %v", err)
@@ -825,10 +876,10 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 		var resp *http.Response
 		err = o.fs.pacer.Call(func() (bool, error) {
 			resp, err = o.fs.srv.CallJSON(ctx, &opts, nil, &item)
-			return shouldRetry(resp, err)
+			return shouldRetry(ctx, resp, err)
 		})
 		if err != nil {
-			return errors.Wrap(err, "couldn't get media item")
+			return fmt.Errorf("couldn't get media item: %w", err)
 		}
 		o.setMetaData(&item)
 		return nil
@@ -902,7 +953,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 	}
 	err = o.fs.pacer.Call(func() (bool, error) {
 		resp, err = o.fs.srv.Call(ctx, &opts)
-		return shouldRetry(resp, err)
+		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
 		return nil, err
@@ -943,8 +994,9 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 
 	// Upload the media item in exchange for an UploadToken
 	opts := rest.Opts{
-		Method: "POST",
-		Path:   "/uploads",
+		Method:  "POST",
+		Path:    "/uploads",
+		Options: options,
 		ExtraHeaders: map[string]string{
 			"X-Goog-Upload-File-Name": fileName,
 			"X-Goog-Upload-Protocol":  "raw",
@@ -956,13 +1008,13 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	err = o.fs.pacer.CallNoRetry(func() (bool, error) {
 		resp, err = o.fs.srv.Call(ctx, &opts)
 		if err != nil {
-			return shouldRetry(resp, err)
+			return shouldRetry(ctx, resp, err)
 		}
 		token, err = rest.ReadBody(resp)
-		return shouldRetry(resp, err)
+		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
-		return errors.Wrap(err, "couldn't upload file")
+		return fmt.Errorf("couldn't upload file: %w", err)
 	}
 	uploadToken := strings.TrimSpace(string(token))
 	if uploadToken == "" {
@@ -987,23 +1039,25 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	var result api.BatchCreateResponse
 	err = o.fs.pacer.Call(func() (bool, error) {
 		resp, err = o.fs.srv.CallJSON(ctx, &opts, request, &result)
-		return shouldRetry(resp, err)
+		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
-		return errors.Wrap(err, "failed to create media item")
+		return fmt.Errorf("failed to create media item: %w", err)
 	}
 	if len(result.NewMediaItemResults) != 1 {
 		return errors.New("bad response to BatchCreate wrong number of items")
 	}
 	mediaItemResult := result.NewMediaItemResults[0]
 	if mediaItemResult.Status.Code != 0 {
-		return errors.Errorf("upload failed: %s (%d)", mediaItemResult.Status.Message, mediaItemResult.Status.Code)
+		return fmt.Errorf("upload failed: %s (%d)", mediaItemResult.Status.Message, mediaItemResult.Status.Code)
 	}
 	o.setMetaData(&mediaItemResult.MediaItem)
 
 	// Add upload to internal storage
 	if pattern.isUpload {
+		o.fs.uploadedMu.Lock()
 		o.fs.uploaded.AddEntry(o)
+		o.fs.uploadedMu.Unlock()
 	}
 	return nil
 }
@@ -1017,7 +1071,7 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 	albumTitle, fileName := match[1], match[2]
 	album, ok := o.fs.albums[false].get(albumTitle)
 	if !ok {
-		return errors.Errorf("couldn't file %q in album %q for delete", fileName, albumTitle)
+		return fmt.Errorf("couldn't file %q in album %q for delete", fileName, albumTitle)
 	}
 	opts := rest.Opts{
 		Method:     "POST",
@@ -1030,10 +1084,10 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 	var resp *http.Response
 	err = o.fs.pacer.Call(func() (bool, error) {
 		resp, err = o.fs.srv.CallJSON(ctx, &opts, &request, nil)
-		return shouldRetry(resp, err)
+		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
-		return errors.Wrap(err, "couldn't delete item from album")
+		return fmt.Errorf("couldn't delete item from album: %w", err)
 	}
 	return nil
 }

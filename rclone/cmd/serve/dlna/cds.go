@@ -3,9 +3,9 @@ package dlna
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"log"
-	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,45 +16,10 @@ import (
 
 	"github.com/anacrolix/dms/dlna"
 	"github.com/anacrolix/dms/upnp"
-	"github.com/anacrolix/dms/upnpav"
-	"github.com/pkg/errors"
+	"github.com/rclone/rclone/cmd/serve/dlna/upnpav"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/vfs"
 )
-
-// Add a minimal number of mime types to augment go's built in types
-// for environments which don't have access to a mime.types file (eg
-// Termux on android)
-func init() {
-	for _, t := range []struct {
-		mimeType   string
-		extensions string
-	}{
-		{"audio/flac", ".flac"},
-		{"audio/mpeg", ".mpga,.mpega,.mp2,.mp3,.m4a"},
-		{"audio/ogg", ".oga,.ogg,.opus,.spx"},
-		{"audio/x-wav", ".wav"},
-		{"image/tiff", ".tiff,.tif"},
-		{"video/dv", ".dif,.dv"},
-		{"video/fli", ".fli"},
-		{"video/mpeg", ".mpeg,.mpg,.mpe"},
-		{"video/MP2T", ".ts"},
-		{"video/mp4", ".mp4"},
-		{"video/quicktime", ".qt,.mov"},
-		{"video/ogg", ".ogv"},
-		{"video/webm", ".webm"},
-		{"video/x-msvideo", ".avi"},
-		{"video/x-matroska", ".mpv,.mkv"},
-		{"text/srt", ".srt"},
-	} {
-		for _, ext := range strings.Split(t.extensions, ",") {
-			err := mime.AddExtensionType(ext, t.mimeType)
-			if err != nil {
-				panic(err)
-			}
-		}
-	}
-}
 
 type contentDirectoryService struct {
 	*server
@@ -77,16 +42,12 @@ func (cds *contentDirectoryService) cdsObjectToUpnpavObject(cdsObject object, fi
 	}
 
 	if fileInfo.IsDir() {
-		children, err := cds.readContainer(cdsObject, host)
-		if err != nil {
-			return nil, err
-		}
-
+		defaultChildCount := 1
 		obj.Class = "object.container.storageFolder"
 		obj.Title = fileInfo.Name()
 		return upnpav.Container{
 			Object:     obj,
-			ChildCount: len(children),
+			ChildCount: &defaultChildCount,
 		}, nil
 	}
 
@@ -99,6 +60,11 @@ func (cds *contentDirectoryService) cdsObjectToUpnpavObject(cdsObject object, fi
 	var mimeType string
 	if o, ok := fileInfo.DirEntry().(fs.Object); ok {
 		mimeType = fs.MimeType(context.TODO(), o)
+		// If backend doesn't know what the mime type is then
+		// try getting it from the file name
+		if mimeType == "application/octet-stream" {
+			mimeType = fs.MimeTypeFromName(fileInfo.Name())
+		}
 	} else {
 		mimeType = fs.MimeTypeFromName(fileInfo.Name())
 	}
@@ -110,6 +76,7 @@ func (cds *contentDirectoryService) cdsObjectToUpnpavObject(cdsObject object, fi
 
 	obj.Class = "object.item." + mediaType[1] + "Item"
 	obj.Title = fileInfo.Name()
+	obj.Date = upnpav.Timestamp{Time: fileInfo.ModTime()}
 
 	item := upnpav.Item{
 		Object: obj,
@@ -186,7 +153,7 @@ func (cds *contentDirectoryService) readContainer(o object, host string) (ret []
 // Given a list of nodes, separate them into potential media items and any associated resources (external subtitles,
 // for example.)
 //
-// The result is a a slice of potential media nodes (in their original order) and a map containing associated
+// The result is a slice of potential media nodes (in their original order) and a map containing associated
 // resources nodes of each media node, if any.
 func mediaWithResources(nodes vfs.Nodes) (vfs.Nodes, map[vfs.Node]vfs.Nodes) {
 	media, mediaResources := vfs.Nodes{}, make(map[vfs.Node]vfs.Nodes)
@@ -196,7 +163,9 @@ func mediaWithResources(nodes vfs.Nodes) (vfs.Nodes, map[vfs.Node]vfs.Nodes) {
 	for _, node := range nodes {
 		baseName, ext := splitExt(strings.ToLower(node.Name()))
 		switch ext {
-		case ".srt":
+		case ".srt", ".ass", ".ssa", ".sub", ".idx", ".sup", ".jss", ".txt", ".usf", ".cue", ".vtt", ".css":
+			// .idx should be with .sub, .css should be with vtt otherwise they should be culled,
+			// and their mimeTypes are not consistent, but anyway these negatives don't throw errors.
 			subtitlesByName[baseName] = node
 		default:
 			mediaByName[baseName] = append(mediaByName[baseName], node)

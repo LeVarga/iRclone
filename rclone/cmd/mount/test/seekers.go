@@ -1,3 +1,4 @@
+//go:build ignore
 // +build ignore
 
 // Read lots files with lots of simultaneous seeking to stress test the seek code
@@ -21,7 +22,7 @@ var (
 	maxBlockSize = flag.Int("b", 1024*1024, "Max block size to read")
 	simultaneous = flag.Int("transfers", 16, "Number of simultaneous files to open")
 	seeksPerFile = flag.Int("seeks", 8, "Seeks per file")
-	mask         = flag.Int64("mask", 0, "mask for seek, eg 0x7fff")
+	mask         = flag.Int64("mask", 0, "mask for seek, e.g. 0x7fff")
 )
 
 func init() {

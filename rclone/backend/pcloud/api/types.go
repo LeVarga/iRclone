@@ -13,7 +13,7 @@ const (
 	timeFormat = `"` + time.RFC1123Z + `"`
 )
 
-// Time represents represents date and time information for the
+// Time represents date and time information for the
 // pcloud API, by using RFC1123Z
 type Time time.Time
 
@@ -96,7 +96,7 @@ func (i *Item) ModTime() (t time.Time) {
 	return t
 }
 
-// ItemResult is returned from the /listfolder, /createfolder, /deletefolder, /deletefile etc methods
+// ItemResult is returned from the /listfolder, /createfolder, /deletefolder, /deletefile, etc. methods
 type ItemResult struct {
 	Error
 	Metadata Item `json:"metadata"`
@@ -104,8 +104,9 @@ type ItemResult struct {
 
 // Hashes contains the supported hashes
 type Hashes struct {
-	SHA1 string `json:"sha1"`
-	MD5  string `json:"md5"`
+	SHA1   string `json:"sha1"`
+	MD5    string `json:"md5"`
+	SHA256 string `json:"sha256"`
 }
 
 // UploadFileResponse is the response from /uploadfile
@@ -135,7 +136,7 @@ func (g *GetFileLinkResult) IsValid() bool {
 	if len(g.Hosts) == 0 {
 		return false
 	}
-	return time.Time(g.Expires).Sub(time.Now()) > 30*time.Second
+	return time.Until(time.Time(g.Expires)) > 30*time.Second
 }
 
 // URL returns a URL from the Path and Hosts.  Check with IsValid
@@ -150,6 +151,14 @@ type ChecksumFileResult struct {
 	Error
 	Hashes
 	Metadata Item `json:"metadata"`
+}
+
+// PubLinkResult is returned from /getfilepublink and /getfolderpublink
+type PubLinkResult struct {
+	Error
+	LinkID   int    `json:"linkid"`
+	Link     string `json:"link"`
+	LinkCode string `json:"code"`
 }
 
 // UserInfo is returned from /userinfo

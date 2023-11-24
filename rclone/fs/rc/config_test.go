@@ -3,11 +3,10 @@ package rc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
-	"github.com/pkg/errors"
-	"github.com/rclone/rclone/cmd/serve/httplib"
 	"github.com/rclone/rclone/fs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,7 +40,7 @@ func TestAddOption(t *testing.T) {
 func TestAddOptionReload(t *testing.T) {
 	defer clearOptionBlock()()
 	assert.Equal(t, len(optionBlock), 0)
-	reload := func() error { return nil }
+	reload := func(ctx context.Context) error { return nil }
 	AddOptionReload("potato", &testOptions, reload)
 	assert.Equal(t, len(optionBlock), 1)
 	assert.Equal(t, len(optionReload), 1)
@@ -75,10 +74,11 @@ func TestOptionsGet(t *testing.T) {
 
 func TestOptionsGetMarshal(t *testing.T) {
 	defer clearOptionBlock()()
+	ctx := context.Background()
+	ci := fs.GetConfig(ctx)
 
 	// Add some real options
-	AddOption("http", &httplib.DefaultOpt)
-	AddOption("main", fs.Config)
+	AddOption("main", ci)
 	AddOption("rc", &DefaultOpt)
 
 	// get them
@@ -97,7 +97,7 @@ func TestOptionsGetMarshal(t *testing.T) {
 func TestOptionsSet(t *testing.T) {
 	defer clearOptionBlock()()
 	var reloaded int
-	AddOptionReload("potato", &testOptions, func() error {
+	AddOptionReload("potato", &testOptions, func(ctx context.Context) error {
 		if reloaded > 0 {
 			return errors.New("error while reloading")
 		}

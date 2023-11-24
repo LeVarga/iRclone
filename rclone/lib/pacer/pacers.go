@@ -104,6 +104,15 @@ func (c *Default) Calculate(state State) time.Duration {
 	return sleepTime
 }
 
+// ZeroDelayCalculator is a Calculator that never delays.
+type ZeroDelayCalculator struct {
+}
+
+// Calculate takes the current Pacer state and return the wait time until the next try.
+func (c *ZeroDelayCalculator) Calculate(state State) time.Duration {
+	return 0
+}
+
 // AmazonCloudDrive is a specialized pacer for Amazon Drive
 //
 // It implements a truncated exponential backoff strategy with randomization.
@@ -168,6 +177,35 @@ func (c *AmazonCloudDrive) Calculate(state State) time.Duration {
 	return sleepTime
 }
 
+// AzureIMDS is a pacer for the Azure instance metadata service.
+type AzureIMDS struct {
+}
+
+// NewAzureIMDS returns a new Azure IMDS calculator.
+func NewAzureIMDS() *AzureIMDS {
+	c := &AzureIMDS{}
+	return c
+}
+
+// Calculate takes the current Pacer state and return the wait time until the next try.
+func (c *AzureIMDS) Calculate(state State) time.Duration {
+	var addBackoff time.Duration
+
+	if state.ConsecutiveRetries == 0 {
+		// Initial condition: no backoff.
+		return 0
+	}
+
+	if state.ConsecutiveRetries > 4 {
+		// The number of consecutive retries shouldn't exceed five.
+		// In case it does for some reason, cap delay.
+		addBackoff = 0
+	} else {
+		addBackoff = time.Duration(2<<uint(state.ConsecutiveRetries-1)) * time.Second
+	}
+	return addBackoff + state.SleepTime
+}
+
 // GoogleDrive is a specialized pacer for Google Drive
 //
 // It implements a truncated exponential backoff strategy with randomization.
@@ -190,7 +228,7 @@ type GoogleDriveOption interface {
 func NewGoogleDrive(opts ...GoogleDriveOption) *GoogleDrive {
 	c := &GoogleDrive{
 		minSleep: 10 * time.Millisecond,
-		burst:    1,
+		burst:    100,
 	}
 	c.Update(opts...)
 	return c

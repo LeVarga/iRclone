@@ -2,13 +2,14 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fstest"
 	"github.com/rclone/rclone/lib/random"
@@ -17,21 +18,76 @@ import (
 )
 
 // Open a file for write
-func writeHandleCreate(t *testing.T, r *fstest.Run) (*VFS, *WriteFileHandle) {
-	vfs := New(r.Fremote, nil)
+func writeHandleCreate(t *testing.T) (r *fstest.Run, vfs *VFS, fh *WriteFileHandle) {
+	r, vfs = newTestVFS(t)
 
 	h, err := vfs.OpenFile("file1", os.O_WRONLY|os.O_CREATE, 0777)
 	require.NoError(t, err)
 	fh, ok := h.(*WriteFileHandle)
 	require.True(t, ok)
 
-	return vfs, fh
+	return r, vfs, fh
+}
+
+// Test write when underlying storage is readonly, must be run as non-root
+func TestWriteFileHandleReadonly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skipf("Skipping test on %s", runtime.GOOS)
+	}
+	if *fstest.RemoteName != "" {
+		t.Skip("Skipping test on non local remote")
+	}
+	r, vfs, fh := writeHandleCreate(t)
+
+	// Write a file, so underlying remote will be created
+	_, err := fh.Write([]byte("hello"))
+	assert.NoError(t, err)
+
+	err = fh.Close()
+	assert.NoError(t, err)
+
+	var info os.FileInfo
+	info, err = os.Stat(r.FremoteName)
+	assert.NoError(t, err)
+
+	// Remove write permission
+	oldMode := info.Mode()
+	err = os.Chmod(r.FremoteName, oldMode^(oldMode&0222))
+	assert.NoError(t, err)
+
+	var h Handle
+	h, err = vfs.OpenFile("file2", os.O_WRONLY|os.O_CREATE, 0777)
+	require.NoError(t, err)
+
+	var ok bool
+	fh, ok = h.(*WriteFileHandle)
+	require.True(t, ok)
+
+	// error is propagated to Close()
+	_, err = fh.Write([]byte("hello"))
+	assert.NoError(t, err)
+
+	err = fh.Close()
+	assert.NotNil(t, err)
+
+	// Remove should fail
+	err = vfs.Remove("file1")
+	assert.NotNil(t, err)
+
+	// Only file1 should exist
+	_, err = vfs.Stat("file1")
+	assert.NoError(t, err)
+
+	_, err = vfs.Stat("file2")
+	assert.Equal(t, true, errors.Is(err, os.ErrNotExist))
+
+	// Restore old permission
+	err = os.Chmod(r.FremoteName, oldMode)
+	assert.NoError(t, err)
 }
 
 func TestWriteFileHandleMethods(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, fh := writeHandleCreate(t, r)
+	r, vfs, fh := writeHandleCreate(t)
 
 	// String
 	assert.Equal(t, "file1 (w)", fh.String())
@@ -118,7 +174,7 @@ func TestWriteFileHandleMethods(t *testing.T) {
 	h, err = vfs.OpenFile("file1", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0777)
 	require.NoError(t, err)
 	err = h.Close()
-	if errors.Cause(err) != fs.ErrorCantUploadEmptyFiles {
+	if !errors.Is(err, fs.ErrorCantUploadEmptyFiles) {
 		assert.NoError(t, err)
 		checkListing(t, root, []string{"file1,0,false"})
 	}
@@ -133,9 +189,7 @@ func TestWriteFileHandleMethods(t *testing.T) {
 }
 
 func TestWriteFileHandleWriteAt(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, fh := writeHandleCreate(t, r)
+	r, vfs, fh := writeHandleCreate(t)
 
 	// Preconditions
 	assert.Equal(t, int64(0), fh.offset)
@@ -179,9 +233,7 @@ func TestWriteFileHandleWriteAt(t *testing.T) {
 }
 
 func TestWriteFileHandleFlush(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, fh := writeHandleCreate(t, r)
+	_, vfs, fh := writeHandleCreate(t)
 
 	// Check Flush already creates file for unwritten handles, without closing it
 	err := fh.Flush()
@@ -213,13 +265,11 @@ func TestWriteFileHandleFlush(t *testing.T) {
 }
 
 func TestWriteFileHandleRelease(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	_, fh := writeHandleCreate(t, r)
+	_, _, fh := writeHandleCreate(t)
 
 	// Check Release closes file
 	err := fh.Release()
-	if errors.Cause(err) == fs.ErrorCantUploadEmptyFiles {
+	if errors.Is(err, fs.ErrorCantUploadEmptyFiles) {
 		t.Logf("skipping test: %v", err)
 		return
 	}
@@ -262,12 +312,11 @@ func canSetModTime(t *testing.T, r *fstest.Run) bool {
 
 // tests mod time on open files
 func TestWriteFileModTimeWithOpenWriters(t *testing.T) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
+	r, vfs, fh := writeHandleCreate(t)
+
 	if !canSetModTime(t, r) {
-		return
+		t.Skip("can't set mod time")
 	}
-	vfs, fh := writeHandleCreate(t, r)
 
 	mtime := time.Date(2012, time.November, 18, 17, 32, 31, 0, time.UTC)
 
@@ -290,9 +339,7 @@ func TestWriteFileModTimeWithOpenWriters(t *testing.T) {
 }
 
 func testFileReadAt(t *testing.T, n int) {
-	r := fstest.NewRun(t)
-	defer r.Finalise()
-	vfs, fh := writeHandleCreate(t, r)
+	_, vfs, fh := writeHandleCreate(t)
 
 	contents := []byte(random.String(n))
 	if n != 0 {
@@ -303,7 +350,7 @@ func testFileReadAt(t *testing.T, n int) {
 
 	// Close the file without writing to it if n==0
 	err := fh.Close()
-	if errors.Cause(err) == fs.ErrorCantUploadEmptyFiles {
+	if errors.Is(err, fs.ErrorCantUploadEmptyFiles) {
 		t.Logf("skipping test: %v", err)
 		return
 	}

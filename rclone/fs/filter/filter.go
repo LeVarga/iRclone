@@ -2,92 +2,31 @@
 package filter
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path"
-	"regexp"
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/fs"
 	"golang.org/x/sync/errgroup"
 )
 
-// Active is the globally active filter
-var Active = mustNewFilter(nil)
-
-// rule is one filter rule
-type rule struct {
-	Include bool
-	Regexp  *regexp.Regexp
-}
-
-// Match returns true if rule matches path
-func (r *rule) Match(path string) bool {
-	return r.Regexp.MatchString(path)
-}
-
-// String the rule
-func (r *rule) String() string {
-	c := "-"
-	if r.Include {
-		c = "+"
-	}
-	return fmt.Sprintf("%s %s", c, r.Regexp.String())
-}
-
-// rules is a slice of rules
-type rules struct {
-	rules    []rule
-	existing map[string]struct{}
-}
-
-// add adds a rule if it doesn't exist already
-func (rs *rules) add(Include bool, re *regexp.Regexp) {
-	if rs.existing == nil {
-		rs.existing = make(map[string]struct{})
-	}
-	newRule := rule{
-		Include: Include,
-		Regexp:  re,
-	}
-	newRuleString := newRule.String()
-	if _, ok := rs.existing[newRuleString]; ok {
-		return // rule already exists
-	}
-	rs.rules = append(rs.rules, newRule)
-	rs.existing[newRuleString] = struct{}{}
-}
-
-// clear clears all the rules
-func (rs *rules) clear() {
-	rs.rules = nil
-	rs.existing = nil
-}
-
-// len returns the number of rules
-func (rs *rules) len() int {
-	return len(rs.rules)
-}
-
-// FilesMap describes the map of files to transfer
-type FilesMap map[string]struct{}
+// This is the globally active filter
+//
+// This is accessed through GetConfig and AddConfig
+var globalConfig = mustNewFilter(nil)
 
 // Opt configures the filter
 type Opt struct {
 	DeleteExcluded bool
-	FilterRule     []string
-	FilterFrom     []string
-	ExcludeRule    []string
-	ExcludeFrom    []string
-	ExcludeFile    string
-	IncludeRule    []string
-	IncludeFrom    []string
+	RulesOpt       // embedded so we don't change the JSON API
+	ExcludeFile    []string
 	FilesFrom      []string
+	FilesFromRaw   []string
+	MetaRules      RulesOpt
 	MinAge         fs.Duration
 	MaxAge         fs.Duration
 	MinSize        fs.SizeSuffix
@@ -103,6 +42,9 @@ var DefaultOpt = Opt{
 	MaxSize: fs.SizeSuffix(-1),
 }
 
+// FilesMap describes the map of files to transfer
+type FilesMap map[string]struct{}
+
 // Filter describes any filtering in operation
 type Filter struct {
 	Opt         Opt
@@ -110,6 +52,7 @@ type Filter struct {
 	ModTimeTo   time.Time
 	fileRules   rules
 	dirRules    rules
+	metaRules   rules
 	files       FilesMap // files if filesFrom
 	dirs        FilesMap // dirs from filesFrom
 }
@@ -139,79 +82,47 @@ func NewFilter(opt *Opt) (f *Filter, err error) {
 		fs.Debugf(nil, "--max-age %v to %v", f.Opt.MaxAge, f.ModTimeFrom)
 	}
 
-	addImplicitExclude := false
-	foundExcludeRule := false
-
-	for _, rule := range f.Opt.IncludeRule {
-		err = f.Add(true, rule)
-		if err != nil {
-			return nil, err
-		}
-		addImplicitExclude = true
-	}
-	for _, rule := range f.Opt.IncludeFrom {
-		err := forEachLine(rule, func(line string) error {
-			return f.Add(true, line)
-		})
-		if err != nil {
-			return nil, err
-		}
-		addImplicitExclude = true
-	}
-	for _, rule := range f.Opt.ExcludeRule {
-		err = f.Add(false, rule)
-		if err != nil {
-			return nil, err
-		}
-		foundExcludeRule = true
-	}
-	for _, rule := range f.Opt.ExcludeFrom {
-		err := forEachLine(rule, func(line string) error {
-			return f.Add(false, line)
-		})
-		if err != nil {
-			return nil, err
-		}
-		foundExcludeRule = true
+	err = parseRules(&f.Opt.RulesOpt, f.Add, f.Clear)
+	if err != nil {
+		return nil, err
 	}
 
-	if addImplicitExclude && foundExcludeRule {
-		fs.Errorf(nil, "Using --filter is recommended instead of both --include and --exclude as the order they are parsed in is indeterminate")
-	}
-
-	for _, rule := range f.Opt.FilterRule {
-		err = f.AddRule(rule)
-		if err != nil {
-			return nil, err
-		}
-	}
-	for _, rule := range f.Opt.FilterFrom {
-		err := forEachLine(rule, f.AddRule)
-		if err != nil {
-			return nil, err
-		}
+	err = parseRules(&f.Opt.MetaRules, f.metaRules.Add, f.metaRules.clear)
+	if err != nil {
+		return nil, err
 	}
 
 	inActive := f.InActive()
+
 	for _, rule := range f.Opt.FilesFrom {
 		if !inActive {
-			return nil, fmt.Errorf("The usage of --files-from overrides all other filters, it should be used alone")
+			return nil, fmt.Errorf("the usage of --files-from overrides all other filters, it should be used alone or with --files-from-raw")
 		}
 		f.initAddFile() // init to show --files-from set even if no files within
-		err := forEachLine(rule, func(line string) error {
+		err := forEachLine(rule, false, func(line string) error {
 			return f.AddFile(line)
 		})
 		if err != nil {
 			return nil, err
 		}
 	}
-	if addImplicitExclude {
-		err = f.Add(false, "/**")
+
+	for _, rule := range f.Opt.FilesFromRaw {
+		// --files-from-raw can be used with --files-from, hence we do
+		// not need to get the value of f.InActive again
+		if !inActive {
+			return nil, fmt.Errorf("the usage of --files-from-raw overrides all other filters, it should be used alone or with --files-from")
+		}
+		f.initAddFile() // init to show --files-from set even if no files within
+		err := forEachLine(rule, true, func(line string) error {
+			return f.AddFile(line)
+		})
 		if err != nil {
 			return nil, err
 		}
 	}
-	if fs.Config.Dump&fs.DumpFilters != 0 {
+
+	if fs.GetConfig(context.Background()).Dump&fs.DumpFilters != 0 {
 		fmt.Println("--- start filters ---")
 		fmt.Println(f.DumpFilters())
 		fmt.Println("--- end filters ---")
@@ -234,7 +145,7 @@ func (f *Filter) addDirGlobs(Include bool, glob string) error {
 		if dirGlob == "/" {
 			continue
 		}
-		dirRe, err := globToRegexp(dirGlob, f.Opt.IgnoreCase)
+		dirRe, err := GlobToRegexp(dirGlob, f.Opt.IgnoreCase)
 		if err != nil {
 			return err
 		}
@@ -247,10 +158,14 @@ func (f *Filter) addDirGlobs(Include bool, glob string) error {
 func (f *Filter) Add(Include bool, glob string) error {
 	isDirRule := strings.HasSuffix(glob, "/")
 	isFileRule := !isDirRule
+	// Make excluding "dir/" equivalent to excluding "dir/**"
+	if isDirRule && !Include {
+		glob += "**"
+	}
 	if strings.Contains(glob, "**") {
 		isDirRule, isFileRule = true, true
 	}
-	re, err := globToRegexp(glob, f.Opt.IgnoreCase)
+	re, err := GlobToRegexp(glob, f.Opt.IgnoreCase)
 	if err != nil {
 		return err
 	}
@@ -277,24 +192,15 @@ func (f *Filter) Add(Include bool, glob string) error {
 //
 // These are
 //
-//   + glob
 //   - glob
-//   !
+//   - glob
+//     !
 //
 // '+' includes the glob, '-' excludes it and '!' resets the filter list
 //
 // Line comments may be introduced with '#' or ';'
 func (f *Filter) AddRule(rule string) error {
-	switch {
-	case rule == "!":
-		f.Clear()
-		return nil
-	case strings.HasPrefix(rule, "- "):
-		return f.Add(false, rule[2:])
-	case strings.HasPrefix(rule, "+ "):
-		return f.Add(true, rule[2:])
-	}
-	return errors.Errorf("malformed rule %q", rule)
+	return addRule(rule, f.Add, f.Clear)
 }
 
 // initAddFile creates f.files and f.dirs
@@ -335,6 +241,7 @@ func (f *Filter) Files() FilesMap {
 func (f *Filter) Clear() {
 	f.fileRules.clear()
 	f.dirRules.clear()
+	f.metaRules.clear()
 }
 
 // InActive returns false if any filters are active
@@ -346,17 +253,18 @@ func (f *Filter) InActive() bool {
 		f.Opt.MaxSize < 0 &&
 		f.fileRules.len() == 0 &&
 		f.dirRules.len() == 0 &&
+		f.metaRules.len() == 0 &&
 		len(f.Opt.ExcludeFile) == 0)
 }
 
-// includeRemote returns whether this remote passes the filter rules.
-func (f *Filter) includeRemote(remote string) bool {
-	for _, rule := range f.fileRules.rules {
-		if rule.Match(remote) {
-			return rule.Include
-		}
+// IncludeRemote returns whether this remote passes the filter rules.
+func (f *Filter) IncludeRemote(remote string) bool {
+	// filesFrom takes precedence
+	if f.files != nil {
+		_, include := f.files[remote]
+		return include
 	}
-	return true
+	return f.fileRules.include(remote)
 }
 
 // ListContainsExcludeFile checks if exclude file is present in the list.
@@ -368,8 +276,10 @@ func (f *Filter) ListContainsExcludeFile(entries fs.DirEntries) bool {
 		obj, ok := entry.(fs.Object)
 		if ok {
 			basename := path.Base(obj.Remote())
-			if basename == f.Opt.ExcludeFile {
-				return true
+			for _, excludeFile := range f.Opt.ExcludeFile {
+				if basename == excludeFile {
+					return true
+				}
 			}
 		}
 	}
@@ -397,27 +307,23 @@ func (f *Filter) IncludeDirectory(ctx context.Context, fs fs.Fs) func(string) (b
 			return include, nil
 		}
 		remote += "/"
-		for _, rule := range f.dirRules.rules {
-			if rule.Match(remote) {
-				return rule.Include, nil
-			}
-		}
-
-		return true, nil
+		return f.dirRules.include(remote), nil
 	}
 }
 
 // DirContainsExcludeFile checks if exclude file is present in a
-// directroy. If fs is nil, it works properly if ExcludeFile is an
+// directory. If fs is nil, it works properly if ExcludeFile is an
 // empty string (for testing).
 func (f *Filter) DirContainsExcludeFile(ctx context.Context, fremote fs.Fs, remote string) (bool, error) {
 	if len(f.Opt.ExcludeFile) > 0 {
-		exists, err := fs.FileExists(ctx, fremote, path.Join(remote, f.Opt.ExcludeFile))
-		if err != nil {
-			return false, err
-		}
-		if exists {
-			return true, nil
+		for _, excludeFile := range f.Opt.ExcludeFile {
+			exists, err := fs.FileExists(ctx, fremote, path.Join(remote, excludeFile))
+			if err != nil {
+				return false, err
+			}
+			if exists {
+				return true, nil
+			}
 		}
 	}
 	return false, nil
@@ -425,7 +331,7 @@ func (f *Filter) DirContainsExcludeFile(ctx context.Context, fremote fs.Fs, remo
 
 // Include returns whether this object should be included into the
 // sync or not
-func (f *Filter) Include(remote string, size int64, modTime time.Time) bool {
+func (f *Filter) Include(remote string, size int64, modTime time.Time, metadata fs.Metadata) bool {
 	// filesFrom takes precedence
 	if f.files != nil {
 		_, include := f.files[remote]
@@ -443,7 +349,21 @@ func (f *Filter) Include(remote string, size int64, modTime time.Time) bool {
 	if f.Opt.MaxSize >= 0 && size > int64(f.Opt.MaxSize) {
 		return false
 	}
-	return f.includeRemote(remote)
+	if f.metaRules.len() > 0 {
+		metadatas := make([]string, 0, len(metadata)+1)
+		for key, value := range metadata {
+			metadatas = append(metadatas, fmt.Sprintf("%s=%s", key, value))
+		}
+		if len(metadata) == 0 {
+			// If there is no metadata, add a null one
+			// otherwise the default action isn't taken
+			metadatas = append(metadatas, "\x00=\x00")
+		}
+		if !f.metaRules.includeMany(metadatas) {
+			return false
+		}
+	}
+	return f.IncludeRemote(remote)
 }
 
 // IncludeObject returns whether this object should be included into
@@ -457,32 +377,17 @@ func (f *Filter) IncludeObject(ctx context.Context, o fs.Object) bool {
 	} else {
 		modTime = time.Unix(0, 0)
 	}
-
-	return f.Include(o.Remote(), o.Size(), modTime)
-}
-
-// forEachLine calls fn on every line in the file pointed to by path
-//
-// It ignores empty lines and lines starting with '#' or ';'
-func forEachLine(path string, fn func(string) error) (err error) {
-	in, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer fs.CheckClose(in, &err)
-	scanner := bufio.NewScanner(in)
-	for scanner.Scan() {
-		line := scanner.Text()
-		line = strings.TrimSpace(line)
-		if len(line) == 0 || line[0] == '#' || line[0] == ';' {
-			continue
-		}
-		err := fn(line)
+	var metadata fs.Metadata
+	if f.metaRules.len() > 0 {
+		var err error
+		metadata, err = fs.GetMetadata(ctx, o)
 		if err != nil {
-			return err
+			fs.Errorf(o, "Failed to read metadata: %v", err)
+			metadata = nil
 		}
+
 	}
-	return scanner.Err()
+	return f.Include(o.Remote(), o.Size(), modTime, metadata)
 }
 
 // DumpFilters dumps the filters in textual form, 1 per line
@@ -502,6 +407,12 @@ func (f *Filter) DumpFilters() string {
 	for _, dirRule := range f.dirRules.rules {
 		rules = append(rules, dirRule.String())
 	}
+	if f.metaRules.len() > 0 {
+		rules = append(rules, "--- Metadata filter rules ---")
+		for _, metaRule := range f.metaRules.rules {
+			rules = append(rules, metaRule.String())
+		}
+	}
 	return strings.Join(rules, "\n")
 }
 
@@ -515,18 +426,20 @@ var errFilesFromNotSet = errors.New("--files-from not set so can't use Filter.Li
 // MakeListR makes function to return all the files set using --files-from
 func (f *Filter) MakeListR(ctx context.Context, NewObject func(ctx context.Context, remote string) (fs.Object, error)) fs.ListRFn {
 	return func(ctx context.Context, dir string, callback fs.ListRCallback) error {
+		ci := fs.GetConfig(ctx)
 		if !f.HaveFilesFrom() {
 			return errFilesFromNotSet
 		}
 		var (
-			remotes = make(chan string, fs.Config.Checkers)
-			g       errgroup.Group
+			checkers = ci.Checkers
+			remotes  = make(chan string, checkers)
+			g, gCtx  = errgroup.WithContext(ctx)
 		)
-		for i := 0; i < fs.Config.Checkers; i++ {
+		for i := 0; i < checkers; i++ {
 			g.Go(func() (err error) {
 				var entries = make(fs.DirEntries, 1)
 				for remote := range remotes {
-					entries[0], err = NewObject(ctx, remote)
+					entries[0], err = NewObject(gCtx, remote)
 					if err == fs.ErrorObjectNotFound {
 						// Skip files that are not found
 					} else if err != nil {
@@ -541,8 +454,13 @@ func (f *Filter) MakeListR(ctx context.Context, NewObject func(ctx context.Conte
 				return nil
 			})
 		}
+	outer:
 		for remote := range f.files {
-			remotes <- remote
+			select {
+			case remotes <- remote:
+			case <-gCtx.Done():
+				break outer
+			}
 		}
 		close(remotes)
 		return g.Wait()
@@ -559,8 +477,82 @@ func (f *Filter) UsesDirectoryFilters() bool {
 	}
 	rule := f.dirRules.rules[0]
 	re := rule.Regexp.String()
-	if rule.Include == true && re == "^.*$" {
+	if rule.Include && re == "^.*$" {
 		return false
 	}
 	return true
+}
+
+// Context key for config
+type configContextKeyType struct{}
+
+var configContextKey = configContextKeyType{}
+
+// GetConfig returns the global or context sensitive config
+func GetConfig(ctx context.Context) *Filter {
+	if ctx == nil {
+		return globalConfig
+	}
+	c := ctx.Value(configContextKey)
+	if c == nil {
+		return globalConfig
+	}
+	return c.(*Filter)
+}
+
+// CopyConfig copies the global config (if any) from srcCtx into
+// dstCtx returning the new context.
+func CopyConfig(dstCtx, srcCtx context.Context) context.Context {
+	if srcCtx == nil {
+		return dstCtx
+	}
+	c := srcCtx.Value(configContextKey)
+	if c == nil {
+		return dstCtx
+	}
+	return context.WithValue(dstCtx, configContextKey, c)
+}
+
+// AddConfig returns a mutable config structure based on a shallow
+// copy of that found in ctx and returns a new context with that added
+// to it.
+func AddConfig(ctx context.Context) (context.Context, *Filter) {
+	c := GetConfig(ctx)
+	cCopy := new(Filter)
+	*cCopy = *c
+	newCtx := context.WithValue(ctx, configContextKey, cCopy)
+	return newCtx, cCopy
+}
+
+// ReplaceConfig replaces the filter config in the ctx with the one
+// passed in and returns a new context with that added to it.
+func ReplaceConfig(ctx context.Context, f *Filter) context.Context {
+	newCtx := context.WithValue(ctx, configContextKey, f)
+	return newCtx
+}
+
+// Context key for the "use filter" flag
+type useFlagContextKeyType struct{}
+
+var useFlagContextKey = useFlagContextKeyType{}
+
+// GetUseFilter obtains the "use filter" flag from context
+// The flag tells filter-aware backends (Drive) to constrain List using filter
+func GetUseFilter(ctx context.Context) bool {
+	if ctx != nil {
+		if pVal := ctx.Value(useFlagContextKey); pVal != nil {
+			return *(pVal.(*bool))
+		}
+	}
+	return false
+}
+
+// SetUseFilter returns a context having (re)set the "use filter" flag
+func SetUseFilter(ctx context.Context, useFilter bool) context.Context {
+	if useFilter == GetUseFilter(ctx) {
+		return ctx // Minimize depth of nested contexts
+	}
+	pVal := new(bool)
+	*pVal = useFilter
+	return context.WithValue(ctx, useFlagContextKey, pVal)
 }

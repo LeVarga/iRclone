@@ -1,58 +1,129 @@
+// Package api provides types used by the Jottacloud API.
 package api
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"time"
-
-	"github.com/pkg/errors"
 )
 
 const (
-	// default time format for almost all request and responses
-	timeFormat = "2006-01-02-T15:04:05Z0700"
-	// the API server seems to use a different format
-	apiTimeFormat = "2006-01-02T15:04:05Z07:00"
+	// default time format historically used for all request and responses.
+	// Similar to time.RFC3339, but with an extra '-' in front of 'T',
+	// and no ':' separator in timezone offset. Some newer endpoints have
+	// moved to proper time.RFC3339 conformant format instead.
+	jottaTimeFormat = "2006-01-02-T15:04:05Z0700"
 )
 
-// Time represents time values in the Jottacloud API. It uses a custom RFC3339 like format.
-type Time time.Time
-
-// UnmarshalXML turns XML into a Time
-func (t *Time) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+// unmarshalXML turns XML into a Time
+func unmarshalXMLTime(d *xml.Decoder, start xml.StartElement, timeFormat string) (time.Time, error) {
 	var v string
 	if err := d.DecodeElement(&v, &start); err != nil {
-		return err
+		return time.Time{}, err
 	}
 	if v == "" {
-		*t = Time(time.Time{})
-		return nil
+		return time.Time{}, nil
 	}
 	newTime, err := time.Parse(timeFormat, v)
 	if err == nil {
-		*t = Time(newTime)
+		return newTime, nil
 	}
+	return time.Time{}, err
+}
+
+// JottaTime represents time values in the classic API using a custom RFC3339 like format
+type JottaTime time.Time
+
+// String returns JottaTime string in Jottacloud classic format
+func (t JottaTime) String() string { return time.Time(t).Format(jottaTimeFormat) }
+
+// UnmarshalXML turns XML into a JottaTime
+func (t *JottaTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	tm, err := unmarshalXMLTime(d, start, jottaTimeFormat)
+	*t = JottaTime(tm)
 	return err
 }
 
-// MarshalXML turns a Time into XML
-func (t *Time) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+// MarshalXML turns a JottaTime into XML
+func (t *JottaTime) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 	return e.EncodeElement(t.String(), start)
 }
 
-// Return Time string in Jottacloud format
-func (t Time) String() string { return time.Time(t).Format(timeFormat) }
+// Rfc3339Time represents time values in the newer APIs using standard RFC3339 format
+type Rfc3339Time time.Time
 
-// APIString returns Time string in Jottacloud API format
-func (t Time) APIString() string { return time.Time(t).Format(apiTimeFormat) }
+// String returns Rfc3339Time string in Jottacloud RFC3339 format
+func (t Rfc3339Time) String() string { return time.Time(t).Format(time.RFC3339) }
+
+// UnmarshalXML turns XML into a Rfc3339Time
+func (t *Rfc3339Time) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	tm, err := unmarshalXMLTime(d, start, time.RFC3339)
+	*t = Rfc3339Time(tm)
+	return err
+}
+
+// MarshalXML turns a Rfc3339Time into XML
+func (t *Rfc3339Time) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	return e.EncodeElement(t.String(), start)
+}
+
+// MarshalJSON turns a Rfc3339Time into JSON
+func (t *Rfc3339Time) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf("\"%s\"", t.String())), nil
+}
+
+// LoginToken is struct representing the login token generated in the WebUI
+type LoginToken struct {
+	Username      string `json:"username"`
+	Realm         string `json:"realm"`
+	WellKnownLink string `json:"well_known_link"`
+	AuthToken     string `json:"auth_token"`
+}
+
+// WellKnown contains some configuration parameters for setting up endpoints
+type WellKnown struct {
+	Issuer                                     string   `json:"issuer"`
+	AuthorizationEndpoint                      string   `json:"authorization_endpoint"`
+	TokenEndpoint                              string   `json:"token_endpoint"`
+	TokenIntrospectionEndpoint                 string   `json:"token_introspection_endpoint"`
+	UserinfoEndpoint                           string   `json:"userinfo_endpoint"`
+	EndSessionEndpoint                         string   `json:"end_session_endpoint"`
+	JwksURI                                    string   `json:"jwks_uri"`
+	CheckSessionIframe                         string   `json:"check_session_iframe"`
+	GrantTypesSupported                        []string `json:"grant_types_supported"`
+	ResponseTypesSupported                     []string `json:"response_types_supported"`
+	SubjectTypesSupported                      []string `json:"subject_types_supported"`
+	IDTokenSigningAlgValuesSupported           []string `json:"id_token_signing_alg_values_supported"`
+	UserinfoSigningAlgValuesSupported          []string `json:"userinfo_signing_alg_values_supported"`
+	RequestObjectSigningAlgValuesSupported     []string `json:"request_object_signing_alg_values_supported"`
+	ResponseNodesSupported                     []string `json:"response_modes_supported"`
+	RegistrationEndpoint                       string   `json:"registration_endpoint"`
+	TokenEndpointAuthMethodsSupported          []string `json:"token_endpoint_auth_methods_supported"`
+	TokenEndpointAuthSigningAlgValuesSupported []string `json:"token_endpoint_auth_signing_alg_values_supported"`
+	ClaimsSupported                            []string `json:"claims_supported"`
+	ClaimTypesSupported                        []string `json:"claim_types_supported"`
+	ClaimsParameterSupported                   bool     `json:"claims_parameter_supported"`
+	ScopesSupported                            []string `json:"scopes_supported"`
+	RequestParameterSupported                  bool     `json:"request_parameter_supported"`
+	RequestURIParameterSupported               bool     `json:"request_uri_parameter_supported"`
+	CodeChallengeMethodsSupported              []string `json:"code_challenge_methods_supported"`
+	TLSClientCertificateBoundAccessTokens      bool     `json:"tls_client_certificate_bound_access_tokens"`
+	IntrospectionEndpoint                      string   `json:"introspection_endpoint"`
+}
 
 // TokenJSON is the struct representing the HTTP response from OAuth2
 // providers returning a token in JSON form.
 type TokenJSON struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int32  `json:"expires_in"` // at least PayPal returns string, while most return number
+	AccessToken      string `json:"access_token"`
+	ExpiresIn        int32  `json:"expires_in"` // at least PayPal returns string, while most return number
+	RefreshExpiresIn int32  `json:"refresh_expires_in"`
+	RefreshToken     string `json:"refresh_token"`
+	TokenType        string `json:"token_type"`
+	IDToken          string `json:"id_token"`
+	NotBeforePolicy  int32  `json:"not-before-policy"`
+	SessionState     string `json:"session_state"`
+	Scope            string `json:"scope"`
 }
 
 // JSON structures returned by new API
@@ -79,16 +150,11 @@ type AllocateFileResponse struct {
 
 // UploadResponse after an upload
 type UploadResponse struct {
-	Name      string      `json:"name"`
-	Path      string      `json:"path"`
-	Kind      string      `json:"kind"`
-	ContentID string      `json:"content_id"`
-	Bytes     int64       `json:"bytes"`
-	Md5       string      `json:"md5"`
-	Created   int64       `json:"created"`
-	Modified  int64       `json:"modified"`
-	Deleted   interface{} `json:"deleted"`
-	Mime      string      `json:"mime"`
+	Path      string `json:"path"`
+	ContentID string `json:"content_id"`
+	Bytes     int64  `json:"bytes"`
+	Md5       string `json:"md5"`
+	Modified  int64  `json:"modified"`
 }
 
 // DeviceRegistrationResponse is the response to registering a device
@@ -109,15 +175,21 @@ type CustomerInfo struct {
 	AccountType       string      `json:"account_type"`
 	SubscriptionType  string      `json:"subscription_type"`
 	Usage             int64       `json:"usage"`
-	Qouta             int64       `json:"quota"`
+	Quota             int64       `json:"quota"`
 	BusinessUsage     int64       `json:"business_usage"`
-	BusinessQouta     int64       `json:"business_quota"`
+	BusinessQuota     int64       `json:"business_quota"`
 	WriteLocked       bool        `json:"write_locked"`
 	ReadLocked        bool        `json:"read_locked"`
 	LockedCause       interface{} `json:"locked_cause"`
 	WebHash           string      `json:"web_hash"`
 	AndroidHash       string      `json:"android_hash"`
 	IOSHash           string      `json:"ios_hash"`
+}
+
+// TrashResponse is returned when emptying the Trash
+type TrashResponse struct {
+	Folders int64 `json:"folders"`
+	Files   int64 `json:"files"`
 }
 
 // XML structures returned by the old API
@@ -289,9 +361,9 @@ type JottaFolder struct {
 	Name       string        `xml:"name,attr"`
 	Deleted    Flag          `xml:"deleted,attr"`
 	Path       string        `xml:"path"`
-	CreatedAt  Time          `xml:"created"`
-	ModifiedAt Time          `xml:"modified"`
-	Updated    Time          `xml:"updated"`
+	CreatedAt  JottaTime     `xml:"created"`
+	ModifiedAt JottaTime     `xml:"modified"`
+	Updated    JottaTime     `xml:"updated"`
 	Folders    []JottaFolder `xml:"folders>folder"`
 	Files      []JottaFile   `xml:"files>file"`
 }
@@ -316,16 +388,17 @@ GET http://www.jottacloud.com/JFS/<account>/<device>/<mountpoint>/.../<file>
 // JottaFile represents a Jottacloud file
 type JottaFile struct {
 	XMLName         xml.Name
-	Name            string `xml:"name,attr"`
-	Deleted         Flag   `xml:"deleted,attr"`
-	PublicSharePath string `xml:"publicSharePath"`
-	State           string `xml:"currentRevision>state"`
-	CreatedAt       Time   `xml:"currentRevision>created"`
-	ModifiedAt      Time   `xml:"currentRevision>modified"`
-	Updated         Time   `xml:"currentRevision>updated"`
-	Size            int64  `xml:"currentRevision>size"`
-	MimeType        string `xml:"currentRevision>mime"`
-	MD5             string `xml:"currentRevision>md5"`
+	Name            string    `xml:"name,attr"`
+	Deleted         Flag      `xml:"deleted,attr"`
+	PublicURI       string    `xml:"publicURI"`
+	PublicSharePath string    `xml:"publicSharePath"`
+	State           string    `xml:"currentRevision>state"`
+	CreatedAt       JottaTime `xml:"currentRevision>created"`
+	ModifiedAt      JottaTime `xml:"currentRevision>modified"`
+	Updated         JottaTime `xml:"currentRevision>updated"`
+	Size            int64     `xml:"currentRevision>size"`
+	MimeType        string    `xml:"currentRevision>mime"`
+	MD5             string    `xml:"currentRevision>md5"`
 }
 
 // Error is a custom Error for wrapping Jottacloud error responses
@@ -336,7 +409,7 @@ type Error struct {
 	Cause      string `xml:"cause"`
 }
 
-// Error returns a string for the error and statistifes the error interface
+// Error returns a string for the error and satisfies the error interface
 func (e *Error) Error() string {
 	out := fmt.Sprintf("error %d", e.StatusCode)
 	if e.Message != "" {

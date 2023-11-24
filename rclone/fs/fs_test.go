@@ -3,6 +3,7 @@ package fs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,13 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/require"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/lib/pacer"
-	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -49,7 +49,7 @@ func TestFeaturesList(t *testing.T) {
 func TestFeaturesEnabled(t *testing.T) {
 	ft := new(Features)
 	ft.CaseInsensitive = true
-	ft.Purge = func(ctx context.Context) error { return nil }
+	ft.Purge = func(ctx context.Context, dir string) error { return nil }
 	enabled := ft.Enabled()
 
 	flag, ok := enabled["CaseInsensitive"]
@@ -99,7 +99,7 @@ func TestOption(t *testing.T) {
 		Name:  "potato",
 		Value: SizeSuffix(17 << 20),
 	}
-	assert.Equal(t, "17M", d.String())
+	assert.Equal(t, "17Mi", d.String())
 	assert.Equal(t, "SizeSuffix", d.Type())
 	err := d.Set("18M")
 	assert.NoError(t, err)
@@ -127,15 +127,15 @@ func (dp *dummyPaced) fn() (bool, error) {
 }
 
 func TestPacerCall(t *testing.T) {
-	expectedCalled := Config.LowLevelRetries
+	ctx := context.Background()
+	config := GetConfig(ctx)
+	expectedCalled := config.LowLevelRetries
 	if expectedCalled == 0 {
+		ctx, config = AddConfig(ctx)
 		expectedCalled = 20
-		Config.LowLevelRetries = expectedCalled
-		defer func() {
-			Config.LowLevelRetries = 0
-		}()
+		config.LowLevelRetries = expectedCalled
 	}
-	p := NewPacer(pacer.NewDefault(pacer.MinSleep(1*time.Millisecond), pacer.MaxSleep(2*time.Millisecond)))
+	p := NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(1*time.Millisecond), pacer.MaxSleep(2*time.Millisecond)))
 
 	dp := &dummyPaced{retry: true}
 	err := p.Call(dp.fn)
@@ -144,7 +144,7 @@ func TestPacerCall(t *testing.T) {
 }
 
 func TestPacerCallNoRetry(t *testing.T) {
-	p := NewPacer(pacer.NewDefault(pacer.MinSleep(1*time.Millisecond), pacer.MaxSleep(2*time.Millisecond)))
+	p := NewPacer(context.Background(), pacer.NewDefault(pacer.MinSleep(1*time.Millisecond), pacer.MaxSleep(2*time.Millisecond)))
 
 	dp := &dummyPaced{retry: true}
 	err := p.CallNoRetry(dp.fn)
@@ -190,6 +190,43 @@ func TestOptionsGet(t *testing.T) {
 	assert.Nil(t, opt)
 }
 
+func TestOptionsOveridden(t *testing.T) {
+	m := configmap.New()
+	m1 := configmap.Simple{
+		"nounc":      "m1",
+		"copy_links": "m1",
+	}
+	m.AddGetter(m1, configmap.PriorityNormal)
+	m2 := configmap.Simple{
+		"nounc":            "m2",
+		"case_insensitive": "m2",
+	}
+	m.AddGetter(m2, configmap.PriorityConfig)
+	m3 := configmap.Simple{
+		"nounc": "m3",
+	}
+	m.AddGetter(m3, configmap.PriorityDefault)
+	got := testOptions.Overridden(m)
+	assert.Equal(t, configmap.Simple{
+		"copy_links": "m1",
+		"nounc":      "m1",
+	}, got)
+}
+
+func TestOptionsNonDefault(t *testing.T) {
+	m := configmap.Simple{}
+	got := testOptions.NonDefault(m)
+	assert.Equal(t, configmap.Simple{}, got)
+
+	m["case_insensitive"] = "false"
+	got = testOptions.NonDefault(m)
+	assert.Equal(t, configmap.Simple{}, got)
+
+	m["case_insensitive"] = "true"
+	got = testOptions.NonDefault(m)
+	assert.Equal(t, configmap.Simple{"case_insensitive": "true"}, got)
+}
+
 func TestOptionMarshalJSON(t *testing.T) {
 	out, err := json.MarshalIndent(&caseInsensitiveOption, "", "")
 	assert.NoError(t, err)
@@ -205,6 +242,8 @@ func TestOptionMarshalJSON(t *testing.T) {
 "IsPassword": false,
 "NoPrefix": false,
 "Advanced": true,
+"Exclusive": false,
+"Sensitive": false,
 "DefaultStr": "false",
 "ValueStr": "true",
 "Type": "bool"

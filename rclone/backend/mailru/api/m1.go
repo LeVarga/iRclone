@@ -1,3 +1,4 @@
+// Package api provides types used by the Mail.ru API.
 package api
 
 import (
@@ -58,7 +59,7 @@ type UserInfoResponse struct {
 				AutoProlong  bool   `json:"auto_prolong"`
 				Basequota    int64  `json:"basequota"`
 				Enabled      bool   `json:"enabled"`
-				Expires      int    `json:"expires"`
+				Expires      int64  `json:"expires"`
 				Prolong      bool   `json:"prolong"`
 				Promocodes   struct {
 				} `json:"promocodes"`
@@ -80,7 +81,7 @@ type UserInfoResponse struct {
 			FileSizeLimit int64 `json:"file_size_limit"`
 			Space         struct {
 				BytesTotal int64 `json:"bytes_total"`
-				BytesUsed  int   `json:"bytes_used"`
+				BytesUsed  int64 `json:"bytes_used"`
 				Overquota  bool  `json:"overquota"`
 			} `json:"space"`
 		} `json:"cloud"`
@@ -117,7 +118,7 @@ type ListItem struct {
 	Name      string `json:"name"`
 	Home      string `json:"home"`
 	Size      int64  `json:"size"`
-	Mtime     int64  `json:"mtime,omitempty"`
+	Mtime     uint64 `json:"mtime,omitempty"`
 	Hash      string `json:"hash,omitempty"`
 	VirusScan string `json:"virus_scan,omitempty"`
 	Tree      string `json:"tree,omitempty"`
@@ -157,71 +158,6 @@ type FolderInfoResponse struct {
 	Time   int64  `json:"time"`
 	Status int    `json:"status"`
 	Email  string `json:"email"`
-}
-
-// ShardInfoResponse ...
-type ShardInfoResponse struct {
-	Email string `json:"email"`
-	Body  struct {
-		Video []struct {
-			Count string `json:"count"`
-			URL   string `json:"url"`
-		} `json:"video"`
-		ViewDirect []struct {
-			Count string `json:"count"`
-			URL   string `json:"url"`
-		} `json:"view_direct"`
-		WeblinkView []struct {
-			Count string `json:"count"`
-			URL   string `json:"url"`
-		} `json:"weblink_view"`
-		WeblinkVideo []struct {
-			Count string `json:"count"`
-			URL   string `json:"url"`
-		} `json:"weblink_video"`
-		WeblinkGet []struct {
-			Count int    `json:"count"`
-			URL   string `json:"url"`
-		} `json:"weblink_get"`
-		Stock []struct {
-			Count string `json:"count"`
-			URL   string `json:"url"`
-		} `json:"stock"`
-		WeblinkThumbnails []struct {
-			Count string `json:"count"`
-			URL   string `json:"url"`
-		} `json:"weblink_thumbnails"`
-		PublicUpload []struct {
-			Count string `json:"count"`
-			URL   string `json:"url"`
-		} `json:"public_upload"`
-		Auth []struct {
-			Count string `json:"count"`
-			URL   string `json:"url"`
-		} `json:"auth"`
-		Web []struct {
-			Count string `json:"count"`
-			URL   string `json:"url"`
-		} `json:"web"`
-		View []struct {
-			Count string `json:"count"`
-			URL   string `json:"url"`
-		} `json:"view"`
-		Upload []struct {
-			Count string `json:"count"`
-			URL   string `json:"url"`
-		} `json:"upload"`
-		Get []struct {
-			Count string `json:"count"`
-			URL   string `json:"url"`
-		} `json:"get"`
-		Thumbnails []struct {
-			Count string `json:"count"`
-			URL   string `json:"url"`
-		} `json:"thumbnails"`
-	} `json:"body"`
-	Time   int64 `json:"time"`
-	Status int   `json:"status"`
 }
 
 // CleanupResponse ...

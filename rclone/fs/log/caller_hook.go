@@ -15,7 +15,7 @@ type CallerHook struct {
 	levels []logrus.Level
 }
 
-// NewCallerHook use to make an hook
+// NewCallerHook use to make a hook
 func NewCallerHook(levels ...logrus.Level) logrus.Hook {
 	hook := CallerHook{
 		Field:  "source",
@@ -39,13 +39,13 @@ func (h *CallerHook) Fire(entry *logrus.Entry) error {
 	return nil
 }
 
-// findCaller ignores the caller relevent to logrus or fslog then find out the exact caller
+// findCaller ignores the caller relevant to logrus or fslog then find out the exact caller
 func findCaller(skip int) string {
 	file := ""
 	line := 0
 	for i := 0; i < 10; i++ {
 		file, line = getCaller(skip + i)
-		if !strings.HasPrefix(file, "logrus") && strings.Index(file, "log.go") < 0 {
+		if !strings.HasPrefix(file, "logrus") && !strings.Contains(file, "log.go") {
 			break
 		}
 	}

@@ -1,21 +1,20 @@
-/*
-Translate file names for usage on restrictive storage systems
-
-The restricted set of characters are mapped to a unicode equivalent version
-(most to their FULLWIDTH variant) to increase compatability with other
-storage systems.
-See: http://unicode-search.net/unicode-namesearch.pl?term=FULLWIDTH
-
-Encoders will also quote reserved characters to differentiate between
-the raw and encoded forms.
-*/
-
+// Package encoder provides functionality to translate file names
+// for usage on restrictive storage systems.
+//
+// The restricted set of characters are mapped to a unicode equivalent version
+// (most to their FULLWIDTH variant) to increase compatibility with other
+// storage systems.
+// See: http://unicode-search.net/unicode-namesearch.pl?term=FULLWIDTH
+//
+// Encoders will also quote reserved characters to differentiate between
+// the raw and encoded forms.
 package encoder
 
 import (
 	"bytes"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -32,35 +31,38 @@ const (
 )
 
 // NB keep the tests in fstests/fstests/fstests.go FsEncoding up to date with this
+// NB keep the aliases up to date below also
 
 // Possible flags for the MultiEncoder
 const (
-	EncodeZero          uint = 0         // NUL(0x00)
-	EncodeSlash         uint = 1 << iota // /
-	EncodeLtGt                           // <>
-	EncodeDoubleQuote                    // "
-	EncodeSingleQuote                    // '
-	EncodeBackQuote                      // `
-	EncodeDollar                         // $
-	EncodeColon                          // :
-	EncodeQuestion                       // ?
-	EncodeAsterisk                       // *
-	EncodePipe                           // |
-	EncodeHash                           // #
-	EncodePercent                        // %
-	EncodeBackSlash                      // \
-	EncodeCrLf                           // CR(0x0D), LF(0x0A)
-	EncodeDel                            // DEL(0x7F)
-	EncodeCtl                            // CTRL(0x01-0x1F)
-	EncodeLeftSpace                      // Leading SPACE
-	EncodeLeftPeriod                     // Leading .
-	EncodeLeftTilde                      // Leading ~
-	EncodeLeftCrLfHtVt                   // Leading CR LF HT VT
-	EncodeRightSpace                     // Trailing SPACE
-	EncodeRightPeriod                    // Trailing .
-	EncodeRightCrLfHtVt                  // Trailing CR LF HT VT
-	EncodeInvalidUtf8                    // Invalid UTF-8 bytes
-	EncodeDot                            // . and .. names
+	EncodeZero          MultiEncoder = 0         // NUL(0x00)
+	EncodeSlash         MultiEncoder = 1 << iota // /
+	EncodeLtGt                                   // <>
+	EncodeDoubleQuote                            // "
+	EncodeSingleQuote                            // '
+	EncodeBackQuote                              // `
+	EncodeDollar                                 // $
+	EncodeColon                                  // :
+	EncodeQuestion                               // ?
+	EncodeAsterisk                               // *
+	EncodePipe                                   // |
+	EncodeHash                                   // #
+	EncodePercent                                // %
+	EncodeBackSlash                              // \
+	EncodeCrLf                                   // CR(0x0D), LF(0x0A)
+	EncodeDel                                    // DEL(0x7F)
+	EncodeCtl                                    // CTRL(0x01-0x1F)
+	EncodeLeftSpace                              // Leading SPACE
+	EncodeLeftPeriod                             // Leading .
+	EncodeLeftTilde                              // Leading ~
+	EncodeLeftCrLfHtVt                           // Leading CR LF HT VT
+	EncodeRightSpace                             // Trailing SPACE
+	EncodeRightPeriod                            // Trailing .
+	EncodeRightCrLfHtVt                          // Trailing CR LF HT VT
+	EncodeInvalidUtf8                            // Invalid UTF-8 bytes
+	EncodeDot                                    // . and .. names
+	EncodeSquareBracket                          // []
+	EncodeSemicolon                              // ;
 
 	// Synthetic
 	EncodeWin         = EncodeColon | EncodeQuestion | EncodeDoubleQuote | EncodeAsterisk | EncodeLtGt | EncodePipe // :?"*<>|
@@ -68,8 +70,8 @@ const (
 )
 
 // Has returns true if flag is contained in mask
-func (mask MultiEncoder) Has(flag uint) bool {
-	return uint(mask)&flag != 0
+func (mask MultiEncoder) Has(flag MultiEncoder) bool {
+	return mask&flag != 0
 }
 
 // Encoder can transform names to and from the original and translated version.
@@ -98,6 +100,116 @@ type Encoder interface {
 // package can be combined using bitwise or (|) to enable handling of multiple
 // character classes
 type MultiEncoder uint
+
+// Aliases maps encodings to names and vice versa
+var (
+	encodingToName = map[MultiEncoder]string{}
+	nameToEncoding = map[string]MultiEncoder{}
+)
+
+// alias adds an alias for MultiEncoder.String() and MultiEncoder.Set()
+func alias(name string, mask MultiEncoder) {
+	nameToEncoding[name] = mask
+	// don't overwrite existing reverse translations
+	if _, ok := encodingToName[mask]; !ok {
+		encodingToName[mask] = name
+	}
+}
+
+func init() {
+	alias("None", EncodeZero)
+	alias("Slash", EncodeSlash)
+	alias("LtGt", EncodeLtGt)
+	alias("SquareBracket", EncodeSquareBracket)
+	alias("Semicolon", EncodeSemicolon)
+	alias("DoubleQuote", EncodeDoubleQuote)
+	alias("SingleQuote", EncodeSingleQuote)
+	alias("BackQuote", EncodeBackQuote)
+	alias("Dollar", EncodeDollar)
+	alias("Colon", EncodeColon)
+	alias("Question", EncodeQuestion)
+	alias("Asterisk", EncodeAsterisk)
+	alias("Pipe", EncodePipe)
+	alias("Hash", EncodeHash)
+	alias("Percent", EncodePercent)
+	alias("BackSlash", EncodeBackSlash)
+	alias("CrLf", EncodeCrLf)
+	alias("Del", EncodeDel)
+	alias("Ctl", EncodeCtl)
+	alias("LeftSpace", EncodeLeftSpace)
+	alias("LeftPeriod", EncodeLeftPeriod)
+	alias("LeftTilde", EncodeLeftTilde)
+	alias("LeftCrLfHtVt", EncodeLeftCrLfHtVt)
+	alias("RightSpace", EncodeRightSpace)
+	alias("RightPeriod", EncodeRightPeriod)
+	alias("RightCrLfHtVt", EncodeRightCrLfHtVt)
+	alias("InvalidUtf8", EncodeInvalidUtf8)
+	alias("Dot", EncodeDot)
+}
+
+// validStrings returns all the valid MultiEncoder strings
+func validStrings() string {
+	var out []string
+	for k := range nameToEncoding {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ")
+}
+
+// String converts the MultiEncoder into text
+func (mask MultiEncoder) String() string {
+	// See if there is an exact translation - if so return that
+	if name, ok := encodingToName[mask]; ok {
+		return name
+	}
+	var out []string
+	// Otherwise decompose bit by bit
+	for bit := MultiEncoder(1); bit != 0; bit *= 2 {
+		if (mask & bit) != 0 {
+			if name, ok := encodingToName[bit]; ok {
+				out = append(out, name)
+			} else {
+				out = append(out, fmt.Sprintf("0x%X", uint(bit)))
+			}
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+// Set converts a string into a MultiEncoder
+func (mask *MultiEncoder) Set(in string) error {
+	var out MultiEncoder
+	parts := strings.Split(in, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if bits, ok := nameToEncoding[part]; ok {
+			out |= bits
+		} else {
+			i, err := strconv.ParseInt(part, 0, 64)
+			if err != nil {
+				return fmt.Errorf("bad encoding %q: possible values are: %s", part, validStrings())
+			}
+			out |= MultiEncoder(i)
+		}
+	}
+	*mask = out
+	return nil
+}
+
+// Type returns a textual type of the MultiEncoder to satisfy the pflag.Value interface
+func (mask MultiEncoder) Type() string {
+	return "Encoding"
+}
+
+// Scan implements the fmt.Scanner interface
+func (mask *MultiEncoder) Scan(s fmt.ScanState, ch rune) error {
+	token, err := s.Token(true, nil)
+	if err != nil {
+		return err
+	}
+	return mask.Set(string(token))
+}
 
 // Encode takes a raw name and substitutes any reserved characters and
 // patterns in it
@@ -202,6 +314,19 @@ func (mask MultiEncoder) Encode(in string) string {
 				switch r {
 				case '<', '>',
 					'＜', '＞':
+					return true
+				}
+			}
+			if mask.Has(EncodeSquareBracket) { // []
+				switch r {
+				case '[', ']',
+					'［', '］':
+					return true
+				}
+			}
+			if mask.Has(EncodeSemicolon) { // ;
+				switch r {
+				case ';', '；':
 					return true
 				}
 			}
@@ -358,6 +483,28 @@ func (mask MultiEncoder) Encode(in string) string {
 				out.WriteRune(r + fullOffset)
 				continue
 			case '＜', '＞':
+				out.WriteRune(QuoteRune)
+				out.WriteRune(r)
+				continue
+			}
+		}
+		if mask.Has(EncodeSquareBracket) { // []
+			switch r {
+			case '[', ']':
+				out.WriteRune(r + fullOffset)
+				continue
+			case '［', '］':
+				out.WriteRune(QuoteRune)
+				out.WriteRune(r)
+				continue
+			}
+		}
+		if mask.Has(EncodeSemicolon) { // ;
+			switch r {
+			case ';':
+				out.WriteRune(r + fullOffset)
+				continue
+			case '；':
 				out.WriteRune(QuoteRune)
 				out.WriteRune(r)
 				continue
@@ -603,6 +750,19 @@ func (mask MultiEncoder) Decode(in string) string {
 					return true
 				}
 			}
+			if mask.Has(EncodeSquareBracket) { // []
+				switch r {
+				case '［', '］':
+					return true
+				}
+			}
+			if mask.Has(EncodeSemicolon) { // ;
+				switch r {
+				case '；':
+					return true
+				}
+			}
+
 			if mask.Has(EncodeQuestion) { // ?
 				switch r {
 				case '？':
@@ -739,6 +899,28 @@ func (mask MultiEncoder) Decode(in string) string {
 		if mask.Has(EncodeLtGt) { // <>
 			switch r {
 			case '＜', '＞':
+				if unquote {
+					out.WriteRune(r)
+				} else {
+					out.WriteRune(r - fullOffset)
+				}
+				continue
+			}
+		}
+		if mask.Has(EncodeSquareBracket) { // []
+			switch r {
+			case '［', '］':
+				if unquote {
+					out.WriteRune(r)
+				} else {
+					out.WriteRune(r - fullOffset)
+				}
+				continue
+			}
+		}
+		if mask.Has(EncodeSemicolon) { // ;
+			switch r {
+			case '；':
 				if unquote {
 					out.WriteRune(r)
 				} else {
@@ -985,7 +1167,7 @@ func (i identity) ToStandardName(s string) string {
 	return ToStandardName(i, s)
 }
 
-// Identity returns a Encoder that always returns the input value
+// Identity returns an Encoder that always returns the input value
 func Identity() Encoder {
 	return identity{}
 }

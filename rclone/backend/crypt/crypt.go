@@ -3,14 +3,16 @@ package crypt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"path"
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/accounting"
+	"github.com/rclone/rclone/fs/cache"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
 	"github.com/rclone/rclone/fs/config/obscure"
@@ -25,9 +27,13 @@ func init() {
 		Name:        "crypt",
 		Description: "Encrypt/Decrypt a remote",
 		NewFs:       NewFs,
+		CommandHelp: commandHelp,
+		MetadataInfo: &fs.MetadataInfo{
+			Help: `Any metadata supported by the underlying remote is read and written.`,
+		},
 		Options: []fs.Option{{
 			Name:     "remote",
-			Help:     "Remote to encrypt/decrypt.\nNormally should contain a ':' and a path, eg \"myremote:path/to/dir\",\n\"myremote:bucket\" or maybe \"myremote:\" (not recommended).",
+			Help:     "Remote to encrypt/decrypt.\n\nNormally should contain a ':' and a path, e.g. \"myremote:path/to/dir\",\n\"myremote:bucket\" or maybe \"myremote:\" (not recommended).",
 			Required: true,
 		}, {
 			Name:    "filename_encryption",
@@ -35,19 +41,21 @@ func init() {
 			Default: "standard",
 			Examples: []fs.OptionExample{
 				{
-					Value: "off",
-					Help:  "Don't encrypt the file names.  Adds a \".bin\" extension only.",
-				}, {
 					Value: "standard",
-					Help:  "Encrypt the filenames see the docs for the details.",
+					Help:  "Encrypt the filenames.\nSee the docs for the details.",
 				}, {
 					Value: "obfuscate",
 					Help:  "Very simple filename obfuscation.",
+				}, {
+					Value: "off",
+					Help:  "Don't encrypt the file names.\nAdds a \".bin\", or \"suffix\" extension only.",
 				},
 			},
 		}, {
-			Name:    "directory_name_encryption",
-			Help:    "Option to either encrypt directory names or leave them intact.",
+			Name: "directory_name_encryption",
+			Help: `Option to either encrypt directory names or leave them intact.
+
+NB If filename_encryption is "off" then this option will do nothing.`,
 			Default: true,
 			Examples: []fs.OptionExample{
 				{
@@ -63,10 +71,27 @@ func init() {
 			Name:       "password",
 			Help:       "Password or pass phrase for encryption.",
 			IsPassword: true,
+			Required:   true,
 		}, {
 			Name:       "password2",
-			Help:       "Password or pass phrase for salt. Optional but recommended.\nShould be different to the previous password.",
+			Help:       "Password or pass phrase for salt.\n\nOptional but recommended.\nShould be different to the previous password.",
 			IsPassword: true,
+		}, {
+			Name:    "server_side_across_configs",
+			Default: false,
+			Help: `Deprecated: use --server-side-across-configs instead.
+
+Allow server-side operations (e.g. copy) to work across different crypt configs.
+
+Normally this option is not what you want, but if you have two crypts
+pointing to the same backend you can use it.
+
+This can be used, for example, to change file name encryption type
+without re-uploading all the data. Just make two crypt backends
+pointing to two different directories with the single changed
+parameter and use rclone move to move the files between the crypt
+remotes.`,
+			Advanced: true,
 		}, {
 			Name: "show_mapping",
 			Help: `For all files listed show how the names encrypt.
@@ -81,12 +106,67 @@ names, or for debugging purposes.`,
 			Default:  false,
 			Hide:     fs.OptionHideConfigurator,
 			Advanced: true,
+		}, {
+			Name:     "no_data_encryption",
+			Help:     "Option to either encrypt file data or leave it unencrypted.",
+			Default:  false,
+			Advanced: true,
+			Examples: []fs.OptionExample{
+				{
+					Value: "true",
+					Help:  "Don't encrypt file data, leave it unencrypted.",
+				},
+				{
+					Value: "false",
+					Help:  "Encrypt file data.",
+				},
+			},
+		}, {
+			Name: "pass_bad_blocks",
+			Help: `If set this will pass bad blocks through as all 0.
+
+This should not be set in normal operation, it should only be set if
+trying to recover an encrypted file with errors and it is desired to
+recover as much of the file as possible.`,
+			Default:  false,
+			Advanced: true,
+		}, {
+			Name: "filename_encoding",
+			Help: `How to encode the encrypted filename to text string.
+
+This option could help with shortening the encrypted filename. The 
+suitable option would depend on the way your remote count the filename
+length and if it's case sensitive.`,
+			Default: "base32",
+			Examples: []fs.OptionExample{
+				{
+					Value: "base32",
+					Help:  "Encode using base32. Suitable for all remote.",
+				},
+				{
+					Value: "base64",
+					Help:  "Encode using base64. Suitable for case sensitive remote.",
+				},
+				{
+					Value: "base32768",
+					Help:  "Encode using base32768. Suitable if your remote counts UTF-16 or\nUnicode codepoint instead of UTF-8 byte length. (Eg. Onedrive, Dropbox)",
+				},
+			},
+			Advanced: true,
+		}, {
+			Name: "suffix",
+			Help: `If this is set it will override the default suffix of ".bin".
+
+Setting suffix to "none" will result in an empty suffix. This may be useful 
+when the path length is critical.`,
+			Default:  ".bin",
+			Advanced: true,
 		}},
 	})
 }
 
 // newCipherForConfig constructs a Cipher for the given config name
-func newCipherForConfig(opt *Options) (Cipher, error) {
+func newCipherForConfig(opt *Options) (*Cipher, error) {
 	mode, err := NewNameEncryptionMode(opt.FilenameEncryption)
 	if err != nil {
 		return nil, err
@@ -96,24 +176,30 @@ func newCipherForConfig(opt *Options) (Cipher, error) {
 	}
 	password, err := obscure.Reveal(opt.Password)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to decrypt password")
+		return nil, fmt.Errorf("failed to decrypt password: %w", err)
 	}
 	var salt string
 	if opt.Password2 != "" {
 		salt, err = obscure.Reveal(opt.Password2)
 		if err != nil {
-			return nil, errors.Wrap(err, "failed to decrypt password2")
+			return nil, fmt.Errorf("failed to decrypt password2: %w", err)
 		}
 	}
-	cipher, err := newCipher(mode, password, salt, opt.DirectoryNameEncryption)
+	enc, err := NewNameEncoding(opt.FilenameEncoding)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to make cipher")
+		return nil, err
 	}
+	cipher, err := newCipher(mode, password, salt, opt.DirectoryNameEncryption, enc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make cipher: %w", err)
+	}
+	cipher.setEncryptedSuffix(opt.Suffix)
+	cipher.setPassBadBlocks(opt.PassBadBlocks)
 	return cipher, nil
 }
 
 // NewCipher constructs a Cipher for the given config
-func NewCipher(m configmap.Mapper) (Cipher, error) {
+func NewCipher(m configmap.Mapper) (*Cipher, error) {
 	// Parse config into Options struct
 	opt := new(Options)
 	err := configstruct.Set(m, opt)
@@ -124,7 +210,7 @@ func NewCipher(m configmap.Mapper) (Cipher, error) {
 }
 
 // NewFs constructs an Fs from the path, container:path
-func NewFs(name, rpath string, m configmap.Mapper) (fs.Fs, error) {
+func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, error) {
 	// Parse config into Options struct
 	opt := new(Options)
 	err := configstruct.Set(m, opt)
@@ -139,20 +225,25 @@ func NewFs(name, rpath string, m configmap.Mapper) (fs.Fs, error) {
 	if strings.HasPrefix(remote, name+":") {
 		return nil, errors.New("can't point crypt remote at itself - check the value of the remote setting")
 	}
-	wInfo, wName, wPath, wConfig, err := fs.ConfigFs(remote)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to parse remote %q to wrap", remote)
+	// Make sure to remove trailing . referring to the current dir
+	if path.Base(rpath) == "." {
+		rpath = strings.TrimSuffix(rpath, ".")
 	}
 	// Look for a file first
-	remotePath := fspath.JoinRootPath(wPath, cipher.EncryptFileName(rpath))
-	wrappedFs, err := wInfo.NewFs(wName, remotePath, wConfig)
-	// if that didn't produce a file, look for a directory
-	if err != fs.ErrorIsFile {
-		remotePath = fspath.JoinRootPath(wPath, cipher.EncryptDirName(rpath))
-		wrappedFs, err = wInfo.NewFs(wName, remotePath, wConfig)
+	var wrappedFs fs.Fs
+	if rpath == "" {
+		wrappedFs, err = cache.Get(ctx, remote)
+	} else {
+		remotePath := fspath.JoinRootPath(remote, cipher.EncryptFileName(rpath))
+		wrappedFs, err = cache.Get(ctx, remotePath)
+		// if that didn't produce a file, look for a directory
+		if err != fs.ErrorIsFile {
+			remotePath = fspath.JoinRootPath(remote, cipher.EncryptDirName(rpath))
+			wrappedFs, err = cache.Get(ctx, remotePath)
+		}
 	}
 	if err != fs.ErrorIsFile && err != nil {
-		return nil, errors.Wrapf(err, "failed to make remote %s:%q to wrap", wName, remotePath)
+		return nil, fmt.Errorf("failed to make remote %q to wrap: %w", remote, err)
 	}
 	f := &Fs{
 		Fs:     wrappedFs,
@@ -161,10 +252,11 @@ func NewFs(name, rpath string, m configmap.Mapper) (fs.Fs, error) {
 		opt:    *opt,
 		cipher: cipher,
 	}
+	cache.PinUntilFinalized(f.Fs, f)
 	// the features here are ones we could support, and they are
 	// ANDed with the ones from wrappedFs
 	f.features = (&fs.Features{
-		CaseInsensitive:         cipher.NameEncryptionMode() == NameEncryptionOff,
+		CaseInsensitive:         !cipher.dirNameEncrypt || cipher.NameEncryptionMode() == NameEncryptionOff,
 		DuplicateFiles:          true,
 		ReadMimeType:            false, // MimeTypes not supported with crypt
 		WriteMimeType:           false,
@@ -172,7 +264,12 @@ func NewFs(name, rpath string, m configmap.Mapper) (fs.Fs, error) {
 		CanHaveEmptyDirectories: true,
 		SetTier:                 true,
 		GetTier:                 true,
-	}).Fill(f).Mask(wrappedFs).WrapsFs(f, wrappedFs)
+		ServerSideAcrossConfigs: opt.ServerSideAcrossConfigs,
+		ReadMetadata:            true,
+		WriteMetadata:           true,
+		UserMetadata:            true,
+		PartialUploads:          true,
+	}).Fill(ctx, f).Mask(ctx, wrappedFs).WrapsFs(f, wrappedFs)
 
 	return f, err
 }
@@ -182,9 +279,14 @@ type Options struct {
 	Remote                  string `config:"remote"`
 	FilenameEncryption      string `config:"filename_encryption"`
 	DirectoryNameEncryption bool   `config:"directory_name_encryption"`
+	NoDataEncryption        bool   `config:"no_data_encryption"`
 	Password                string `config:"password"`
 	Password2               string `config:"password2"`
+	ServerSideAcrossConfigs bool   `config:"server_side_across_configs"`
 	ShowMapping             bool   `config:"show_mapping"`
+	PassBadBlocks           bool   `config:"pass_bad_blocks"`
+	FilenameEncoding        string `config:"filename_encoding"`
+	Suffix                  string `config:"suffix"`
 }
 
 // Fs represents a wrapped fs.Fs
@@ -195,7 +297,7 @@ type Fs struct {
 	root     string
 	opt      Options
 	features *fs.Features // optional features
-	cipher   Cipher
+	cipher   *Cipher
 }
 
 // Name of the remote (as passed into NewFs)
@@ -232,7 +334,7 @@ func (f *Fs) add(entries *fs.DirEntries, obj fs.Object) {
 	*entries = append(*entries, f.newObject(obj))
 }
 
-// Encrypt an directory file name to entries.
+// Encrypt a directory file name to entries.
 func (f *Fs) addDir(ctx context.Context, entries *fs.DirEntries, dir fs.Directory) {
 	remote := dir.Remote()
 	decryptedRemote, err := f.cipher.DecryptDirName(remote)
@@ -256,7 +358,7 @@ func (f *Fs) encryptEntries(ctx context.Context, entries fs.DirEntries) (newEntr
 		case fs.Directory:
 			f.addDir(ctx, &newEntries, x)
 		default:
-			return nil, errors.Errorf("Unknown object type %T", entry)
+			return nil, fmt.Errorf("unknown object type %T", entry)
 		}
 	}
 	return newEntries, nil
@@ -318,8 +420,18 @@ type putFn func(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ..
 
 // put implements Put or PutStream
 func (f *Fs) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options []fs.OpenOption, put putFn) (fs.Object, error) {
+	ci := fs.GetConfig(ctx)
+
+	if f.opt.NoDataEncryption {
+		o, err := put(ctx, in, f.newObjectInfo(src, nonce{}), options...)
+		if err == nil && o != nil {
+			o = f.newObject(o)
+		}
+		return o, err
+	}
+
 	// Encrypt the data into wrappedIn
-	wrappedIn, err := f.cipher.EncryptData(in)
+	wrappedIn, encrypter, err := f.cipher.encryptData(in)
 	if err != nil {
 		return nil, err
 	}
@@ -327,6 +439,9 @@ func (f *Fs) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options [
 	// Find a hash the destination supports to compute a hash of
 	// the encrypted data
 	ht := f.Fs.Hashes().GetOne()
+	if ci.IgnoreChecksum {
+		ht = hash.None
+	}
 	var hasher *hash.MultiHasher
 	if ht != hash.None {
 		hasher, err = hash.NewMultiHasherTypes(hash.NewHashSet(ht))
@@ -343,7 +458,7 @@ func (f *Fs) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options [
 	}
 
 	// Transfer the data
-	o, err := put(ctx, wrappedIn, f.newObjectInfo(src), options...)
+	o, err := put(ctx, wrappedIn, f.newObjectInfo(src, encrypter.nonce), options...)
 	if err != nil {
 		return nil, err
 	}
@@ -354,15 +469,18 @@ func (f *Fs) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options [
 		var dstHash string
 		dstHash, err = o.Hash(ctx, ht)
 		if err != nil {
-			return nil, errors.Wrap(err, "failed to read destination hash")
+			return nil, fmt.Errorf("failed to read destination hash: %w", err)
 		}
-		if srcHash != "" && dstHash != "" && srcHash != dstHash {
-			// remove object
-			err = o.Remove(ctx)
-			if err != nil {
-				fs.Errorf(o, "Failed to remove corrupted object: %v", err)
+		if srcHash != "" && dstHash != "" {
+			if srcHash != dstHash {
+				// remove object
+				err = o.Remove(ctx)
+				if err != nil {
+					fs.Errorf(o, "Failed to remove corrupted object: %v", err)
+				}
+				return nil, fmt.Errorf("corrupted on transfer: %v encrypted hash differ src %q vs dst %q", ht, srcHash, dstHash)
 			}
-			return nil, errors.Errorf("corrupted on transfer: %v crypted hash differ %q vs %q", ht, srcHash, dstHash)
+			fs.Debugf(src, "%v = %s OK", ht, srcHash)
 		}
 	}
 
@@ -402,25 +520,25 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 	return f.Fs.Rmdir(ctx, f.cipher.EncryptDirName(dir))
 }
 
-// Purge all files in the root and the root directory
+// Purge all files in the directory specified
 //
 // Implement this if you have a way of deleting all the files
 // quicker than just running Remove() on the result of List()
 //
 // Return an error if it doesn't exist
-func (f *Fs) Purge(ctx context.Context) error {
+func (f *Fs) Purge(ctx context.Context, dir string) error {
 	do := f.Fs.Features().Purge
 	if do == nil {
 		return fs.ErrorCantPurge
 	}
-	return do(ctx)
+	return do(ctx, f.cipher.EncryptDirName(dir))
 }
 
-// Copy src to this remote using server side copy operations.
+// Copy src to this remote using server-side copy operations.
 //
-// This is stored with the remote path given
+// This is stored with the remote path given.
 //
-// It returns the destination Object and a possible error
+// It returns the destination Object and a possible error.
 //
 // Will only be called if src.Fs().Name() == f.Name()
 //
@@ -441,11 +559,11 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	return f.newObject(oResult), nil
 }
 
-// Move src to this remote using server side move operations.
+// Move src to this remote using server-side move operations.
 //
-// This is stored with the remote path given
+// This is stored with the remote path given.
 //
-// It returns the destination Object and a possible error
+// It returns the destination Object and a possible error.
 //
 // Will only be called if src.Fs().Name() == f.Name()
 //
@@ -467,7 +585,7 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 }
 
 // DirMove moves src, srcRemote to this remote at dstRemote
-// using server side move operations.
+// using server-side move operations.
 //
 // Will only be called if src.Fs().Name() == f.Name()
 //
@@ -496,11 +614,11 @@ func (f *Fs) PutUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 	if do == nil {
 		return nil, errors.New("can't PutUnchecked")
 	}
-	wrappedIn, err := f.cipher.EncryptData(in)
+	wrappedIn, encrypter, err := f.cipher.encryptData(in)
 	if err != nil {
 		return nil, err
 	}
-	o, err := do(ctx, wrappedIn, f.newObjectInfo(src))
+	o, err := do(ctx, wrappedIn, f.newObjectInfo(src, encrypter.nonce))
 	if err != nil {
 		return nil, err
 	}
@@ -514,7 +632,7 @@ func (f *Fs) PutUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 func (f *Fs) CleanUp(ctx context.Context) error {
 	do := f.Fs.Features().CleanUp
 	if do == nil {
-		return errors.New("can't CleanUp")
+		return errors.New("not supported by underlying remote")
 	}
 	return do(ctx)
 }
@@ -523,7 +641,7 @@ func (f *Fs) CleanUp(ctx context.Context) error {
 func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
 	do := f.Fs.Features().About
 	if do == nil {
-		return nil, errors.New("About not supported")
+		return nil, errors.New("not supported by underlying remote")
 	}
 	return do(ctx)
 }
@@ -553,21 +671,56 @@ func (f *Fs) DecryptFileName(encryptedFileName string) (string, error) {
 	return f.cipher.DecryptFileName(encryptedFileName)
 }
 
+// computeHashWithNonce takes the nonce and encrypts the contents of
+// src with it, and calculates the hash given by HashType on the fly
+//
+// Note that we break lots of encapsulation in this function.
+func (f *Fs) computeHashWithNonce(ctx context.Context, nonce nonce, src fs.Object, hashType hash.Type) (hashStr string, err error) {
+	// Open the src for input
+	in, err := src.Open(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to open src: %w", err)
+	}
+	defer fs.CheckClose(in, &err)
+
+	// Now encrypt the src with the nonce
+	out, err := f.cipher.newEncrypter(in, &nonce)
+	if err != nil {
+		return "", fmt.Errorf("failed to make encrypter: %w", err)
+	}
+
+	// pipe into hash
+	m, err := hash.NewMultiHasherTypes(hash.NewHashSet(hashType))
+	if err != nil {
+		return "", fmt.Errorf("failed to make hasher: %w", err)
+	}
+	_, err = io.Copy(m, out)
+	if err != nil {
+		return "", fmt.Errorf("failed to hash data: %w", err)
+	}
+
+	return m.Sums()[hashType], nil
+}
+
 // ComputeHash takes the nonce from o, and encrypts the contents of
 // src with it, and calculates the hash given by HashType on the fly
 //
 // Note that we break lots of encapsulation in this function.
 func (f *Fs) ComputeHash(ctx context.Context, o *Object, src fs.Object, hashType hash.Type) (hashStr string, err error) {
+	if f.opt.NoDataEncryption {
+		return src.Hash(ctx, hashType)
+	}
+
 	// Read the nonce - opening the file is sufficient to read the nonce in
 	// use a limited read so we only read the header
 	in, err := o.Object.Open(ctx, &fs.RangeOption{Start: 0, End: int64(fileHeaderSize) - 1})
 	if err != nil {
-		return "", errors.Wrap(err, "failed to open object to read nonce")
+		return "", fmt.Errorf("failed to open object to read nonce: %w", err)
 	}
-	d, err := f.cipher.(*cipher).newDecrypter(in)
+	d, err := f.cipher.newDecrypter(in)
 	if err != nil {
 		_ = in.Close()
-		return "", errors.Wrap(err, "failed to open object to read nonce")
+		return "", fmt.Errorf("failed to open object to read nonce: %w", err)
 	}
 	nonce := d.nonce
 	// fs.Debugf(o, "Read nonce % 2x", nonce)
@@ -586,33 +739,10 @@ func (f *Fs) ComputeHash(ctx context.Context, o *Object, src fs.Object, hashType
 	// Close d (and hence in) once we have read the nonce
 	err = d.Close()
 	if err != nil {
-		return "", errors.Wrap(err, "failed to close nonce read")
+		return "", fmt.Errorf("failed to close nonce read: %w", err)
 	}
 
-	// Open the src for input
-	in, err = src.Open(ctx)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to open src")
-	}
-	defer fs.CheckClose(in, &err)
-
-	// Now encrypt the src with the nonce
-	out, err := f.cipher.(*cipher).newEncrypter(in, &nonce)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to make encrypter")
-	}
-
-	// pipe into hash
-	m, err := hash.NewMultiHasherTypes(hash.NewHashSet(hashType))
-	if err != nil {
-		return "", errors.Wrap(err, "failed to make hasher")
-	}
-	_, err = io.Copy(m, out)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to hash data")
-	}
-
-	return m.Sums()[hashType], nil
+	return f.computeHashWithNonce(ctx, nonce, src, hashType)
 }
 
 // MergeDirs merges the contents of all the directories passed
@@ -639,7 +769,7 @@ func (f *Fs) DirCacheFlush() {
 }
 
 // PublicLink generates a public link to the remote path (usually readable by anyone)
-func (f *Fs) PublicLink(ctx context.Context, remote string) (string, error) {
+func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, unlink bool) (string, error) {
 	do := f.Fs.Features().PublicLink
 	if do == nil {
 		return "", errors.New("PublicLink not supported")
@@ -647,9 +777,9 @@ func (f *Fs) PublicLink(ctx context.Context, remote string) (string, error) {
 	o, err := f.NewObject(ctx, remote)
 	if err != nil {
 		// assume it is a directory
-		return do(ctx, f.cipher.EncryptDirName(remote))
+		return do(ctx, f.cipher.EncryptDirName(remote), expire, unlink)
 	}
-	return do(ctx, o.(*Object).Object.Remote())
+	return do(ctx, o.(*Object).Object.Remote(), expire, unlink)
 }
 
 // ChangeNotify calls the passed function with a path
@@ -682,6 +812,67 @@ func (f *Fs) ChangeNotify(ctx context.Context, notifyFunc func(string, fs.EntryT
 		notifyFunc(decrypted, entryType)
 	}
 	do(ctx, wrappedNotifyFunc, pollIntervalChan)
+}
+
+var commandHelp = []fs.CommandHelp{
+	{
+		Name:  "encode",
+		Short: "Encode the given filename(s)",
+		Long: `This encodes the filenames given as arguments returning a list of
+strings of the encoded results.
+
+Usage Example:
+
+    rclone backend encode crypt: file1 [file2...]
+    rclone rc backend/command command=encode fs=crypt: file1 [file2...]
+`,
+	},
+	{
+		Name:  "decode",
+		Short: "Decode the given filename(s)",
+		Long: `This decodes the filenames given as arguments returning a list of
+strings of the decoded results. It will return an error if any of the
+inputs are invalid.
+
+Usage Example:
+
+    rclone backend decode crypt: encryptedfile1 [encryptedfile2...]
+    rclone rc backend/command command=decode fs=crypt: encryptedfile1 [encryptedfile2...]
+`,
+	},
+}
+
+// Command the backend to run a named command
+//
+// The command run is name
+// args may be used to read arguments from
+// opts may be used to read optional arguments from
+//
+// The result should be capable of being JSON encoded
+// If it is a string or a []string it will be shown to the user
+// otherwise it will be JSON encoded and shown to the user like that
+func (f *Fs) Command(ctx context.Context, name string, arg []string, opt map[string]string) (out interface{}, err error) {
+	switch name {
+	case "decode":
+		out := make([]string, 0, len(arg))
+		for _, encryptedFileName := range arg {
+			fileName, err := f.DecryptFileName(encryptedFileName)
+			if err != nil {
+				return out, fmt.Errorf("failed to decrypt: %s: %w", encryptedFileName, err)
+			}
+			out = append(out, fileName)
+		}
+		return out, nil
+	case "encode":
+		out := make([]string, 0, len(arg))
+		for _, fileName := range arg {
+			encryptedFileName := f.EncryptFileName(fileName)
+			out = append(out, encryptedFileName)
+		}
+		return out, nil
+	default:
+		return nil, fs.ErrorCommandNotFound
+	}
 }
 
 // Object describes a wrapped for being read from the Fs
@@ -725,9 +916,13 @@ func (o *Object) Remote() string {
 
 // Size returns the size of the file
 func (o *Object) Size() int64 {
-	size, err := o.f.cipher.DecryptedSize(o.Object.Size())
-	if err != nil {
-		fs.Debugf(o, "Bad size for decrypt: %v", err)
+	size := o.Object.Size()
+	if !o.f.opt.NoDataEncryption {
+		var err error
+		size, err = o.f.cipher.DecryptedSize(size)
+		if err != nil {
+			fs.Debugf(o, "Bad size for decrypt: %v", err)
+		}
 	}
 	return size
 }
@@ -745,6 +940,10 @@ func (o *Object) UnWrap() fs.Object {
 
 // Open opens the file for read.  Call Close() on the returned io.ReadCloser
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.ReadCloser, err error) {
+	if o.f.opt.NoDataEncryption {
+		return o.Object.Open(ctx, options...)
+	}
+
 	var openOptions []fs.OpenOption
 	var offset, limit int64 = 0, -1
 	for _, option := range options {
@@ -820,18 +1019,30 @@ func (f *Fs) Disconnect(ctx context.Context) error {
 	return do(ctx)
 }
 
+// Shutdown the backend, closing any background tasks and any
+// cached connections.
+func (f *Fs) Shutdown(ctx context.Context) error {
+	do := f.Fs.Features().Shutdown
+	if do == nil {
+		return nil
+	}
+	return do(ctx)
+}
+
 // ObjectInfo describes a wrapped fs.ObjectInfo for being the source
 //
 // This encrypts the remote name and adjusts the size
 type ObjectInfo struct {
 	fs.ObjectInfo
-	f *Fs
+	f     *Fs
+	nonce nonce
 }
 
-func (f *Fs) newObjectInfo(src fs.ObjectInfo) *ObjectInfo {
+func (f *Fs) newObjectInfo(src fs.ObjectInfo, nonce nonce) *ObjectInfo {
 	return &ObjectInfo{
 		ObjectInfo: src,
 		f:          f,
+		nonce:      nonce,
 	}
 }
 
@@ -851,13 +1062,78 @@ func (o *ObjectInfo) Size() int64 {
 	if size < 0 {
 		return size
 	}
+	if o.f.opt.NoDataEncryption {
+		return size
+	}
 	return o.f.cipher.EncryptedSize(size)
 }
 
 // Hash returns the selected checksum of the file
 // If no checksum is available it returns ""
 func (o *ObjectInfo) Hash(ctx context.Context, hash hash.Type) (string, error) {
+	var srcObj fs.Object
+	var ok bool
+	// Get the underlying object if there is one
+	if srcObj, ok = o.ObjectInfo.(fs.Object); ok {
+		// Prefer direct interface assertion
+	} else if do, ok := o.ObjectInfo.(*fs.OverrideRemote); ok {
+		// Unwrap if it is an operations.OverrideRemote
+		srcObj = do.UnWrap()
+	} else {
+		// Otherwise don't unwrap any further
+		return "", nil
+	}
+	// if this is wrapping a local object then we work out the hash
+	if srcObj.Fs().Features().IsLocal {
+		// Read the data and encrypt it to calculate the hash
+		fs.Debugf(o, "Computing %v hash of encrypted source", hash)
+		return o.f.computeHashWithNonce(ctx, o.nonce, srcObj, hash)
+	}
 	return "", nil
+}
+
+// GetTier returns storage tier or class of the Object
+func (o *ObjectInfo) GetTier() string {
+	do, ok := o.ObjectInfo.(fs.GetTierer)
+	if !ok {
+		return ""
+	}
+	return do.GetTier()
+}
+
+// ID returns the ID of the Object if known, or "" if not
+func (o *ObjectInfo) ID() string {
+	do, ok := o.ObjectInfo.(fs.IDer)
+	if !ok {
+		return ""
+	}
+	return do.ID()
+}
+
+// Metadata returns metadata for an object
+//
+// It should return nil if there is no Metadata
+func (o *ObjectInfo) Metadata(ctx context.Context) (fs.Metadata, error) {
+	do, ok := o.ObjectInfo.(fs.Metadataer)
+	if !ok {
+		return nil, nil
+	}
+	return do.Metadata(ctx)
+}
+
+// MimeType returns the content type of the Object if
+// known, or "" if not
+//
+// This is deliberately unsupported so we don't leak mime type info by
+// default.
+func (o *ObjectInfo) MimeType(ctx context.Context) string {
+	return ""
+}
+
+// UnWrap returns the Object that this Object is wrapping or
+// nil if it isn't wrapping anything
+func (o *ObjectInfo) UnWrap() fs.Object {
+	return fs.UnWrapObjectInfo(o.ObjectInfo)
 }
 
 // ID returns the ID of the Object if known, or "" if not
@@ -888,6 +1164,26 @@ func (o *Object) GetTier() string {
 	return do.GetTier()
 }
 
+// Metadata returns metadata for an object
+//
+// It should return nil if there is no Metadata
+func (o *Object) Metadata(ctx context.Context) (fs.Metadata, error) {
+	do, ok := o.Object.(fs.Metadataer)
+	if !ok {
+		return nil, nil
+	}
+	return do.Metadata(ctx)
+}
+
+// MimeType returns the content type of the Object if
+// known, or "" if not
+//
+// This is deliberately unsupported so we don't leak mime type info by
+// default.
+func (o *Object) MimeType(ctx context.Context) string {
+	return ""
+}
+
 // Check the interfaces are satisfied
 var (
 	_ fs.Fs              = (*Fs)(nil)
@@ -895,6 +1191,7 @@ var (
 	_ fs.Copier          = (*Fs)(nil)
 	_ fs.Mover           = (*Fs)(nil)
 	_ fs.DirMover        = (*Fs)(nil)
+	_ fs.Commander       = (*Fs)(nil)
 	_ fs.PutUncheckeder  = (*Fs)(nil)
 	_ fs.PutStreamer     = (*Fs)(nil)
 	_ fs.CleanUpper      = (*Fs)(nil)
@@ -908,10 +1205,7 @@ var (
 	_ fs.PublicLinker    = (*Fs)(nil)
 	_ fs.UserInfoer      = (*Fs)(nil)
 	_ fs.Disconnecter    = (*Fs)(nil)
-	_ fs.ObjectInfo      = (*ObjectInfo)(nil)
-	_ fs.Object          = (*Object)(nil)
-	_ fs.ObjectUnWrapper = (*Object)(nil)
-	_ fs.IDer            = (*Object)(nil)
-	_ fs.SetTierer       = (*Object)(nil)
-	_ fs.GetTierer       = (*Object)(nil)
+	_ fs.Shutdowner      = (*Fs)(nil)
+	_ fs.FullObjectInfo  = (*ObjectInfo)(nil)
+	_ fs.FullObject      = (*Object)(nil)
 )

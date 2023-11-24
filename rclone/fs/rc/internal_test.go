@@ -2,7 +2,12 @@ package rc
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,8 +15,22 @@ import (
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/obscure"
-	"github.com/rclone/rclone/fs/version"
 )
+
+func TestMain(m *testing.M) {
+	// Pretend to be rclone version if we have a version string parameter
+	if os.Args[len(os.Args)-1] == "version" {
+		fmt.Printf("rclone %s\n", fs.Version)
+		os.Exit(0)
+	}
+	// Pretend to error if we have an unknown command
+	if os.Args[len(os.Args)-1] == "unknown_command" {
+		fmt.Printf("rclone %s\n", fs.Version)
+		fmt.Fprintf(os.Stderr, "Unknown command\n")
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
 
 func TestInternalNoop(t *testing.T) {
 	call := Calls.Get("rc/noop")
@@ -93,7 +112,7 @@ func TestCoreVersion(t *testing.T) {
 	assert.Equal(t, runtime.GOARCH, out["arch"])
 	assert.Equal(t, runtime.Version(), out["goVersion"])
 	_ = out["isGit"].(bool)
-	v := out["decomposed"].(version.Version)
+	v := out["decomposed"].([]int64)
 	assert.True(t, len(v) >= 2)
 }
 
@@ -118,4 +137,62 @@ func TestCoreQuit(t *testing.T) {
 	}
 	_, err := call.Fn(context.Background(), in)
 	require.Error(t, err)
+}
+
+// core/command: Runs a raw rclone command
+func TestCoreCommand(t *testing.T) {
+	call := Calls.Get("core/command")
+
+	test := func(command string, returnType string, wantOutput string, fail bool) {
+		var rec = httptest.NewRecorder()
+		var w http.ResponseWriter = rec
+
+		in := Params{
+			"command":   command,
+			"opt":       map[string]string{},
+			"arg":       []string{},
+			"_response": w,
+		}
+		if returnType != "" {
+			in["returnType"] = returnType
+		} else {
+			returnType = "COMBINED_OUTPUT"
+		}
+		stream := strings.HasPrefix(returnType, "STREAM")
+		got, err := call.Fn(context.Background(), in)
+		if stream && fail {
+			assert.Error(t, err)
+		} else {
+			assert.NoError(t, err)
+		}
+
+		if !stream {
+			assert.Equal(t, wantOutput, got["result"])
+			assert.Equal(t, fail, got["error"])
+		} else {
+			assert.Equal(t, wantOutput, rec.Body.String())
+		}
+		assert.Equal(t, http.StatusOK, rec.Result().StatusCode)
+	}
+
+	version := fmt.Sprintf("rclone %s\n", fs.Version)
+	errorString := "Unknown command\n"
+	t.Run("OK", func(t *testing.T) {
+		test("version", "", version, false)
+	})
+	t.Run("Fail", func(t *testing.T) {
+		test("unknown_command", "", version+errorString, true)
+	})
+	t.Run("Combined", func(t *testing.T) {
+		test("unknown_command", "COMBINED_OUTPUT", version+errorString, true)
+	})
+	t.Run("Stderr", func(t *testing.T) {
+		test("unknown_command", "STREAM_ONLY_STDERR", errorString, true)
+	})
+	t.Run("Stdout", func(t *testing.T) {
+		test("unknown_command", "STREAM_ONLY_STDOUT", version, true)
+	})
+	t.Run("Stream", func(t *testing.T) {
+		test("unknown_command", "STREAM", version+errorString, true)
+	})
 }

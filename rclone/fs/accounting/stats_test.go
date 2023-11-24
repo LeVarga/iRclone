@@ -1,12 +1,12 @@
 package accounting
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"testing"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/stretchr/testify/assert"
@@ -29,8 +29,11 @@ func TestETA(t *testing.T) {
 		{size: 0, total: 15 * 86400, rate: 1.0, wantETA: 15 * 86400 * time.Second, wantOK: true, wantString: "2w1d"},
 		// Composite Custom String Cases
 		{size: 0, total: 1.5 * 86400, rate: 1.0, wantETA: 1.5 * 86400 * time.Second, wantOK: true, wantString: "1d12h"},
-		{size: 0, total: 95000, rate: 1.0, wantETA: 95000 * time.Second, wantOK: true, wantString: "1d2h23m20s"},
+		{size: 0, total: 95000, rate: 1.0, wantETA: 95000 * time.Second, wantOK: true, wantString: "1d2h23m"}, // Short format, if full it would be "1d2h23m20s"
 		// Standard Duration String Cases
+		{size: 0, total: 1, rate: 2.0, wantETA: 0, wantOK: true, wantString: "0s"},
+		{size: 0, total: 1, rate: 1.0, wantETA: time.Second, wantOK: true, wantString: "1s"},
+		{size: 0, total: 1, rate: 0.5, wantETA: 2 * time.Second, wantOK: true, wantString: "2s"},
 		{size: 0, total: 100, rate: 1.0, wantETA: 100 * time.Second, wantOK: true, wantString: "1m40s"},
 		{size: 50, total: 100, rate: 1.0, wantETA: 50 * time.Second, wantOK: true, wantString: "50s"},
 		{size: 100, total: 100, rate: 1.0, wantETA: 0 * time.Second, wantOK: true, wantString: "0s"},
@@ -41,10 +44,15 @@ func TestETA(t *testing.T) {
 		{size: 10, total: 20, rate: 0.0, wantETA: 0, wantOK: false, wantString: "-"},
 		{size: 10, total: 20, rate: -1.0, wantETA: 0, wantOK: false, wantString: "-"},
 		{size: 0, total: 0, rate: 1.0, wantETA: 0, wantOK: false, wantString: "-"},
+		// Extreme Cases
+		{size: 0, total: (1 << 63) - 1, rate: 1.0, wantETA: (time.Duration((1<<63)-1) / time.Second) * time.Second, wantOK: true, wantString: "-"},
+		{size: 0, total: ((1 << 63) - 1) / int64(time.Second), rate: 1.0, wantETA: (time.Duration((1<<63)-1) / time.Second) * time.Second, wantOK: true, wantString: "-"},
+		{size: 0, total: ((1<<63)-1)/int64(time.Second) - 1, rate: 1.0, wantETA: (time.Duration((1<<63)-1)/time.Second - 1) * time.Second, wantOK: true, wantString: "292y24w3d"}, // Short format, if full it would be "292y24w3d23h47m15s"
+		{size: 0, total: ((1<<63)-1)/int64(time.Second) - 1, rate: 0.1, wantETA: (time.Duration((1<<63)-1) / time.Second) * time.Second, wantOK: true, wantString: "-"},
 	} {
 		t.Run(fmt.Sprintf("size=%d/total=%d/rate=%f", test.size, test.total, test.rate), func(t *testing.T) {
 			gotETA, gotOK := eta(test.size, test.total, test.rate)
-			assert.Equal(t, test.wantETA, gotETA)
+			assert.Equal(t, int64(test.wantETA), int64(gotETA))
 			assert.Equal(t, test.wantOK, gotOK)
 			gotString := etaString(test.size, test.total, test.rate)
 			assert.Equal(t, test.wantString, gotString)
@@ -67,7 +75,8 @@ func TestPercentage(t *testing.T) {
 }
 
 func TestStatsError(t *testing.T) {
-	s := NewStats()
+	ctx := context.Background()
+	s := NewStats(ctx)
 	assert.Equal(t, int64(0), s.GetErrors())
 	assert.False(t, s.HadFatalError())
 	assert.False(t, s.HadRetryError())
@@ -78,7 +87,7 @@ func TestStatsError(t *testing.T) {
 	t0 := time.Now()
 	t1 := t0.Add(time.Second)
 
-	s.Error(nil)
+	_ = s.Error(nil)
 	assert.Equal(t, int64(0), s.GetErrors())
 	assert.False(t, s.HadFatalError())
 	assert.False(t, s.HadRetryError())
@@ -86,7 +95,7 @@ func TestStatsError(t *testing.T) {
 	assert.Equal(t, nil, s.GetLastError())
 	assert.False(t, s.Errored())
 
-	s.Error(io.EOF)
+	_ = s.Error(io.EOF)
 	assert.Equal(t, int64(1), s.GetErrors())
 	assert.False(t, s.HadFatalError())
 	assert.True(t, s.HadRetryError())
@@ -95,22 +104,22 @@ func TestStatsError(t *testing.T) {
 	assert.True(t, s.Errored())
 
 	e := fserrors.ErrorRetryAfter(t0)
-	s.Error(e)
+	_ = s.Error(e)
 	assert.Equal(t, int64(2), s.GetErrors())
 	assert.False(t, s.HadFatalError())
 	assert.True(t, s.HadRetryError())
 	assert.Equal(t, t0, s.RetryAfter())
 	assert.Equal(t, e, s.GetLastError())
 
-	err := errors.Wrap(fserrors.ErrorRetryAfter(t1), "potato")
-	s.Error(err)
+	err := fmt.Errorf("potato: %w", fserrors.ErrorRetryAfter(t1))
+	err = s.Error(err)
 	assert.Equal(t, int64(3), s.GetErrors())
 	assert.False(t, s.HadFatalError())
 	assert.True(t, s.HadRetryError())
 	assert.Equal(t, t1, s.RetryAfter())
 	assert.Equal(t, t1, fserrors.RetryAfterErrorTime(err))
 
-	s.Error(fserrors.FatalError(io.EOF))
+	_ = s.Error(fserrors.FatalError(io.EOF))
 	assert.Equal(t, int64(4), s.GetErrors())
 	assert.True(t, s.HadFatalError())
 	assert.True(t, s.HadRetryError())
@@ -124,7 +133,7 @@ func TestStatsError(t *testing.T) {
 	assert.Equal(t, nil, s.GetLastError())
 	assert.False(t, s.Errored())
 
-	s.Error(fserrors.NoRetryError(io.EOF))
+	_ = s.Error(fserrors.NoRetryError(io.EOF))
 	assert.Equal(t, int64(1), s.GetErrors())
 	assert.False(t, s.HadFatalError())
 	assert.False(t, s.HadRetryError())
@@ -132,6 +141,7 @@ func TestStatsError(t *testing.T) {
 }
 
 func TestStatsTotalDuration(t *testing.T) {
+	ctx := context.Background()
 	startTime := time.Now()
 	time1 := startTime.Add(-40 * time.Second)
 	time2 := time1.Add(10 * time.Second)
@@ -139,7 +149,7 @@ func TestStatsTotalDuration(t *testing.T) {
 	time4 := time3.Add(10 * time.Second)
 
 	t.Run("Single completed transfer", func(t *testing.T) {
-		s := NewStats()
+		s := NewStats(ctx)
 		tr1 := &Transfer{
 			startedAt:   time1,
 			completedAt: time2,
@@ -158,7 +168,7 @@ func TestStatsTotalDuration(t *testing.T) {
 	})
 
 	t.Run("Single uncompleted transfer", func(t *testing.T) {
-		s := NewStats()
+		s := NewStats(ctx)
 		tr1 := &Transfer{
 			startedAt: time1,
 		}
@@ -174,7 +184,7 @@ func TestStatsTotalDuration(t *testing.T) {
 	})
 
 	t.Run("Overlapping without ending", func(t *testing.T) {
-		s := NewStats()
+		s := NewStats(ctx)
 		tr1 := &Transfer{
 			startedAt:   time2,
 			completedAt: time3,
@@ -218,7 +228,7 @@ func TestStatsTotalDuration(t *testing.T) {
 	})
 
 	t.Run("Mixed completed and uncompleted transfers", func(t *testing.T) {
-		s := NewStats()
+		s := NewStats(ctx)
 		s.AddTransfer(&Transfer{
 			startedAt:   time1,
 			completedAt: time2,
@@ -238,6 +248,28 @@ func TestStatsTotalDuration(t *testing.T) {
 		s.mu.Unlock()
 
 		assert.Equal(t, startTime.Sub(time1)/time.Second, total/time.Second)
+	})
+}
+
+func TestRemoteStats(t *testing.T) {
+	ctx := context.Background()
+	startTime := time.Now()
+	time1 := startTime.Add(-40 * time.Second)
+	time2 := time1.Add(10 * time.Second)
+
+	t.Run("Single completed transfer", func(t *testing.T) {
+		s := NewStats(ctx)
+		tr1 := &Transfer{
+			startedAt:   time1,
+			completedAt: time2,
+		}
+		s.AddTransfer(tr1)
+		time.Sleep(time.Millisecond)
+		rs, err := s.RemoteStats()
+
+		require.NoError(t, err)
+		assert.Equal(t, float64(10), rs["transferTime"])
+		assert.Greater(t, rs["elapsedTime"], float64(0))
 	})
 }
 
@@ -382,28 +414,54 @@ func TestTimeRangeDuration(t *testing.T) {
 }
 
 func TestPruneTransfers(t *testing.T) {
-	max := maxCompletedTransfers + fs.Config.Transfers
+	ctx := context.Background()
+	ci := fs.GetConfig(ctx)
+	for _, test := range []struct {
+		Name                     string
+		Transfers                int
+		Limit                    int
+		ExpectedStartedTransfers int
+	}{
+		{
+			Name:                     "Limited number of StartedTransfers",
+			Limit:                    100,
+			Transfers:                200,
+			ExpectedStartedTransfers: 100 + ci.Transfers,
+		},
+		{
+			Name:                     "Unlimited number of StartedTransfers",
+			Limit:                    -1,
+			Transfers:                200,
+			ExpectedStartedTransfers: 200,
+		},
+	} {
+		t.Run(test.Name, func(t *testing.T) {
+			prevLimit := MaxCompletedTransfers
+			MaxCompletedTransfers = test.Limit
+			defer func() { MaxCompletedTransfers = prevLimit }()
 
-	s := NewStats()
-	for i := int64(1); i <= int64(max+100); i++ {
-		s.AddTransfer(&Transfer{
-			startedAt:   time.Unix(i, 0),
-			completedAt: time.Unix(i+1, 0),
+			s := NewStats(ctx)
+			for i := int64(1); i <= int64(test.Transfers); i++ {
+				s.AddTransfer(&Transfer{
+					startedAt:   time.Unix(i, 0),
+					completedAt: time.Unix(i+1, 0),
+				})
+			}
+
+			s.mu.Lock()
+			assert.Equal(t, time.Duration(test.Transfers)*time.Second, s.totalDuration())
+			assert.Equal(t, test.Transfers, len(s.startedTransfers))
+			s.mu.Unlock()
+
+			for i := 0; i < test.Transfers; i++ {
+				s.PruneTransfers()
+			}
+
+			s.mu.Lock()
+			assert.Equal(t, time.Duration(test.Transfers)*time.Second, s.totalDuration())
+			assert.Equal(t, test.ExpectedStartedTransfers, len(s.startedTransfers))
+			s.mu.Unlock()
+
 		})
 	}
-
-	s.mu.Lock()
-	assert.Equal(t, time.Duration(max+100)*time.Second, s.totalDuration())
-	assert.Equal(t, max+100, len(s.startedTransfers))
-	s.mu.Unlock()
-
-	for i := 0; i < 200; i++ {
-		s.PruneTransfers()
-	}
-
-	s.mu.Lock()
-	assert.Equal(t, time.Duration(max+100)*time.Second, s.totalDuration())
-	assert.Equal(t, max, len(s.startedTransfers))
-	s.mu.Unlock()
-
 }

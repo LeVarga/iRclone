@@ -10,7 +10,7 @@ type Response struct {
 	Status  string `json:"status"`
 }
 
-// Error statisfies the error interface
+// Error satisfies the error interface
 func (e *Response) Error() string {
 	return fmt.Sprintf("%s: %s", e.Status, e.Message)
 }
@@ -58,6 +58,7 @@ type FolderListResponse struct {
 	Content  []Item `json:"content"`
 	Name     string `json:"name,omitempty"`
 	ParentID string `json:"parent_id,omitempty"`
+	FolderID string `json:"folder_id,omitempty"`
 }
 
 // FolderCreateResponse is the response to folder/create

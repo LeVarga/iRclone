@@ -1,3 +1,4 @@
+// Package ls provides the ls command.
 package ls
 
 import (
@@ -18,17 +19,20 @@ var (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.BoolVarP(cmdFlags, &listLong, "long", "", listLong, "Show the type as well as names.")
+	flags.BoolVarP(cmdFlags, &listLong, "long", "", listLong, "Show the type as well as names", "")
 }
 
 var commandDefinition = &cobra.Command{
 	Use:   "listremotes",
-	Short: `List all the remotes in the config file.`,
+	Short: `List all the remotes in the config file and defined in environment variables.`,
 	Long: `
 rclone listremotes lists all the available remotes from the config file.
 
-When uses with the -l flag it lists the types too.
+When used with the ` + "`--long`" + ` flag it lists the types too.
 `,
+	Annotations: map[string]string{
+		"versionIntroduced": "v1.34",
+	},
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(0, 0, command, args)
 		remotes := config.FileSections()
@@ -41,7 +45,7 @@ When uses with the -l flag it lists the types too.
 		}
 		for _, remote := range remotes {
 			if listLong {
-				remoteType := config.FileGet(remote, "type", "UNKNOWN")
+				remoteType := config.FileGet(remote, "type")
 				fmt.Printf("%-*s %s\n", maxlen+1, remote+":", remoteType)
 			} else {
 				fmt.Printf("%s:\n", remote)

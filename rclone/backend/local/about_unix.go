@@ -1,12 +1,14 @@
+//go:build darwin || dragonfly || freebsd || linux
 // +build darwin dragonfly freebsd linux
 
 package local
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"syscall"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/fs"
 )
 
@@ -15,7 +17,10 @@ func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
 	var s syscall.Statfs_t
 	err := syscall.Statfs(f.root, &s)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to read disk usage")
+		if os.IsNotExist(err) {
+			return nil, fs.ErrorDirNotFound
+		}
+		return nil, fmt.Errorf("failed to read disk usage: %w", err)
 	}
 	bs := int64(s.Bsize) // nolint: unconvert
 	usage := &fs.Usage{

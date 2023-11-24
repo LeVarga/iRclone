@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/backend/googlephotos/api"
 	"github.com/rclone/rclone/fs"
 )
@@ -23,6 +22,8 @@ type lister interface {
 	listAlbums(ctx context.Context, shared bool) (all *albums, err error)
 	listUploads(ctx context.Context, dir string) (entries fs.DirEntries, err error)
 	dirTime() time.Time
+	startYear() int
+	includeArchived() bool
 }
 
 // dirPattern describes a single directory pattern
@@ -52,6 +53,7 @@ var patterns = dirPatterns{
 				fs.NewDir(prefix+"album", f.dirTime()),
 				fs.NewDir(prefix+"shared-album", f.dirTime()),
 				fs.NewDir(prefix+"upload", f.dirTime()),
+				fs.NewDir(prefix+"feature", f.dirTime()),
 			}, nil
 		},
 	},
@@ -189,6 +191,28 @@ var patterns = dirPatterns{
 		re:     `^shared-album/(.+?)/([^/]+)$`,
 		isFile: true,
 	},
+	{
+		re: `^feature$`,
+		toEntries: func(ctx context.Context, f lister, prefix string, match []string) (entries fs.DirEntries, err error) {
+			return fs.DirEntries{
+				fs.NewDir(prefix+"favorites", f.dirTime()),
+			}, nil
+		},
+	},
+	{
+		re: `^feature/favorites$`,
+		toEntries: func(ctx context.Context, f lister, prefix string, match []string) (entries fs.DirEntries, err error) {
+			filter := featureFilter(ctx, f, match)
+			if err != nil {
+				return nil, err
+			}
+			return f.listDir(ctx, prefix, filter)
+		},
+	},
+	{
+		re:     `^feature/favorites/([^/]+)$`,
+		isFile: true,
+	},
 }.mustCompile()
 
 // mustCompile compiles the regexps in the dirPatterns
@@ -200,7 +224,7 @@ func (ds dirPatterns) mustCompile() dirPatterns {
 	return ds
 }
 
-// match finds the path passed in in the matching structure and
+// match finds the path passed in the matching structure and
 // returns the parameters and a pointer to the match, or nil.
 func (ds dirPatterns) match(root string, itemPath string, isFile bool) (match []string, prefix string, pattern *dirPattern) {
 	itemPath = strings.Trim(itemPath, "/")
@@ -222,11 +246,10 @@ func (ds dirPatterns) match(root string, itemPath string, isFile bool) (match []
 	return nil, "", nil
 }
 
-// Return the years from 2000 to today
-// FIXME make configurable?
+// Return the years from startYear to today
 func years(ctx context.Context, f lister, prefix string, match []string) (entries fs.DirEntries, err error) {
 	currentYear := f.dirTime().Year()
-	for year := 2000; year <= currentYear; year++ {
+	for year := f.startYear(); year <= currentYear; year++ {
 		entries = append(entries, fs.NewDir(prefix+fmt.Sprint(year), f.dirTime()))
 	}
 	return entries, nil
@@ -246,7 +269,7 @@ func days(ctx context.Context, f lister, prefix string, match []string) (entries
 	year := match[1]
 	current, err := time.Parse("2006", year)
 	if err != nil {
-		return nil, errors.Errorf("bad year %q", match[1])
+		return nil, fmt.Errorf("bad year %q", match[1])
 	}
 	currentYear := current.Year()
 	for current.Year() == currentYear {
@@ -260,7 +283,7 @@ func days(ctx context.Context, f lister, prefix string, match []string) (entries
 func yearMonthDayFilter(ctx context.Context, f lister, match []string) (sf api.SearchFilter, err error) {
 	year, err := strconv.Atoi(match[1])
 	if err != nil || year < 1000 || year > 3000 {
-		return sf, errors.Errorf("bad year %q", match[1])
+		return sf, fmt.Errorf("bad year %q", match[1])
 	}
 	sf = api.SearchFilter{
 		Filters: &api.Filters{
@@ -276,18 +299,36 @@ func yearMonthDayFilter(ctx context.Context, f lister, match []string) (sf api.S
 	if len(match) >= 3 {
 		month, err := strconv.Atoi(match[2])
 		if err != nil || month < 1 || month > 12 {
-			return sf, errors.Errorf("bad month %q", match[2])
+			return sf, fmt.Errorf("bad month %q", match[2])
 		}
 		sf.Filters.DateFilter.Dates[0].Month = month
 	}
 	if len(match) >= 4 {
 		day, err := strconv.Atoi(match[3])
 		if err != nil || day < 1 || day > 31 {
-			return sf, errors.Errorf("bad day %q", match[3])
+			return sf, fmt.Errorf("bad day %q", match[3])
 		}
 		sf.Filters.DateFilter.Dates[0].Day = day
 	}
 	return sf, nil
+}
+
+// featureFilter creates a filter for the Feature enum
+//
+// The API only supports one feature, FAVORITES, so hardcode that feature.
+//
+// https://developers.google.com/photos/library/reference/rest/v1/mediaItems/search#FeatureFilter
+func featureFilter(ctx context.Context, f lister, match []string) (sf api.SearchFilter) {
+	sf = api.SearchFilter{
+		Filters: &api.Filters{
+			FeatureFilter: &api.FeatureFilter{
+				IncludedFeatures: []string{
+					"FAVORITES",
+				},
+			},
+		},
+	}
+	return sf
 }
 
 // Turns an albumPath into entries
