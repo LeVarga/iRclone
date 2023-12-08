@@ -5,15 +5,8 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="f5e269ed-9b48-446d-9e78-f167c19ba02b" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/../Podfile" beforeDir="false" afterPath="$PROJECT_DIR$/../Podfile" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/../Podfile.lock" beforeDir="false" afterPath="$PROJECT_DIR$/../Podfile.lock" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/../iRclone.xcodeproj/project.pbxproj" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone.xcodeproj/project.pbxproj" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/../iRclone/AppDelegate.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/AppDelegate.swift" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/../iRclone/FileManager/Model/RemoteFiles.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/FileManager/Model/RemoteFiles.swift" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/../iRclone/Rclone.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/Rclone.swift" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/../iRclone/RemoteManager/Model/Remotes.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/RemoteManager/Model/Remotes.swift" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/rclone.go" beforeDir="false" afterPath="$PROJECT_DIR$/rclone.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/iRclone.entitlements" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/iRclone.entitlements" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -27,31 +20,31 @@
   <component name="MarkdownSettingsMigration">
     <option name="stateVersion" value="1" />
   </component>
-  <component name="ProjectColorInfo"><![CDATA[{
-  "associatedIndex": 0
-}]]></component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 0
+}</component>
   <component name="ProjectId" id="2Yb4JBb4CQooV9nGOSawVQrAE8S" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "RunOnceActivity.OpenProjectViewOnStart": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.go.formatter.settings.were.checked": "true",
-    "RunOnceActivity.go.migrated.go.modules.settings": "true",
-    "RunOnceActivity.go.modules.automatic.dependencies.download": "true",
-    "RunOnceActivity.go.modules.go.list.on.any.changes.was.set": "true",
-    "WebServerToolWindowFactoryState": "false",
-    "git-widget-placeholder": "develop",
-    "go.import.settings.migrated": "true",
-    "go.sdk.automatically.set": "true",
-    "last_opened_file_path": "/Users/levi/Xcode/iRclone/rclone",
-    "node.js.detected.package.eslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.formatter.settings.were.checked&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.migrated.go.modules.settings&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.modules.automatic.dependencies.download&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.modules.go.list.on.any.changes.was.set&quot;: &quot;true&quot;,
+    &quot;WebServerToolWindowFactoryState&quot;: &quot;false&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;develop&quot;,
+    &quot;go.import.settings.migrated&quot;: &quot;true&quot;,
+    &quot;go.sdk.automatically.set&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;/Users/levi/Xcode/iRclone/rclone&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;
   }
-}]]></component>
+}</component>
   <component name="RunManager">
     <configuration name="Unnamed" type="ShConfigurationType" nameIsGenerated="true">
       <option name="SCRIPT_TEXT" value="gomobile bind -target=ios/arm64 -o ../rclone.xcframework" />

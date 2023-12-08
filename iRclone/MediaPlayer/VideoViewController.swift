@@ -244,6 +244,32 @@ class VideoViewController: UIViewController, VLCMediaPlayerDelegate, UITableView
         mediaPlayer.jumpBackward(15)
     }
     
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var didHandleEvent = false
+        for press in presses {
+            guard let key = press.key else { continue }
+            switch key.charactersIgnoringModifiers {
+            case " ":
+                playPause(NSNull())
+                didHandleEvent = true
+            case UIKeyCommand.inputRightArrow:
+                fastForward15s(NSNull())
+                didHandleEvent = true
+            case UIKeyCommand.inputLeftArrow:
+                rewind15s(NSNull())
+                didHandleEvent = true
+            case UIKeyCommand.inputEscape:
+                exitPlayer(NSNull())
+                didHandleEvent = true
+            default:
+                break
+            }
+        }
+        if didHandleEvent == false {
+            super.pressesBegan(presses, with: event)
+        }
+    }
+    
     //MARK: -
     
     func toggleSpinner(on: Bool) {
