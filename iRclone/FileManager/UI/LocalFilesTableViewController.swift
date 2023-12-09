@@ -25,7 +25,7 @@ class LocalFilesTableViewController: FilesTableViewController, QLPreviewControll
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         if !tableView.isEditing {
             tableView.deselectRow(at: indexPath, animated: true)
-            let selected = contents[indexPath.row]
+            let selected = tableContents[indexPath.row]
             selectedURL = URL(string: "file://" + selected.path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)
             switch selected.type {
             case .directory:

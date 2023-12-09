@@ -8,31 +8,51 @@
 
 import UIKit
 
-class FilesTableViewController: UITableViewController {
+class FilesTableViewController: UITableViewController, UISearchBarDelegate {
     // MARK: - Properties
     var remote: String? //remote in which the working directory is located (nil if local)
     var wd: URL? //working directory
-    var contents: [File] = [] { //contents of working directory
+    private var fullContents: [File] = [] { //contents of working directory
         didSet {
             tableView.reloadData()
         }
     }
-    var pasteBtn: UIBarButtonItem?
-    var copyBtn: UIBarButtonItem?
-    var cutBtn: UIBarButtonItem?
-    var mkdirBtn: UIBarButtonItem?
+    private var filteredContents: [File] = [] {
+        didSet {
+            tableView.reloadData()
+        }
+    }
+    var tableContents: [File] {
+        get {
+            return searching ? filteredContents : fullContents
+        }
+    }
+    
+    private var pasteBtn: UIBarButtonItem?
+    private var copyBtn: UIBarButtonItem?
+    private var cutBtn: UIBarButtonItem?
+    private var mkdirBtn: UIBarButtonItem?
+    private var searchController: UISearchController?
+    private var searching = false
     
     // MARK: -
     override func viewDidLoad() {
         if wd == nil && remote == nil {
             wd = documentsUrl
         }
+        
         //set up refresh control target and start loading contents
         self.refreshControl?.addTarget(self, action: #selector(reload), for: .valueChanged)
         self.refreshControl?.beginRefreshing()
         self.refreshControl?.sendActions(for: .valueChanged)
 
         self.navigationItem.rightBarButtonItem = self.editButtonItem
+        
+        // set up search bar
+        searchController = UISearchController()
+        searchController!.searchBar.delegate = self
+        searchController!.searchBar.placeholder = "search..."
+        navigationItem.searchController = searchController
         
         //set up edit toolbar items
         copyBtn = UIBarButtonItem(image: UIImage(systemName: "doc.on.doc"), style: .plain, target: self, action: #selector(copyButton))
@@ -48,9 +68,32 @@ class FilesTableViewController: UITableViewController {
         self.navigationItem.title = wd?.lastPathComponent ?? remote
     }
     
+    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+        if searchText != "" {
+            searching = true
+            self.filteredContents = self.fullContents.filter({ (file) -> Bool in
+            return file.name.lowercased().contains(searchText.lowercased())
+            })
+            self.tableView.reloadData()
+        } else {
+            searching = false
+            filteredContents = []
+        }
+        
+    }
+    
+    func searchBarCancelButtonClicked(_ searchBar: UISearchBar) {
+        searching = false
+    }
+      
     override func viewWillAppear(_ animated: Bool) {
         self.navigationController?.setToolbarHidden(true, animated: true)
         self.setEditing(false, animated: false)
+        navigationItem.hidesSearchBarWhenScrolling = false
+    }
+    
+    override func viewDidAppear(_ animated: Bool) {
+        navigationItem.hidesSearchBarWhenScrolling = true
     }
     
     override func setEditing(_ editing: Bool, animated: Bool) {
@@ -73,16 +116,17 @@ class FilesTableViewController: UITableViewController {
     }
     
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return contents.count
+        return tableContents.count
     }
     
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "reuseIdentifier", for: indexPath)
-        cell.textLabel?.text = contents[indexPath.row].name
+        let file = tableContents[indexPath.row]
+        cell.textLabel?.text = file.name
         
         //set cell image based on file type
         var imageName: String
-        switch contents[indexPath.row].type {
+        switch file.type {
         case .video: imageName = "film"
         case .image: imageName = "photo"
         case .directory: imageName = "folder"
@@ -101,7 +145,7 @@ class FilesTableViewController: UITableViewController {
     }
     
     override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
-        let item = contents[indexPath.row]
+        let item = tableContents[indexPath.row]
         if editingStyle == .delete {
             let alert = UIAlertController(title: "Delete \(item.isDir ? "directory" : "file")", message: "Are you sure you want to delete \(item.path)?", preferredStyle: UIAlertController.Style.alert)
             alert.addAction(UIAlertAction(title: "Delete", style: .destructive, handler: { _ in
@@ -129,7 +173,7 @@ class FilesTableViewController: UITableViewController {
                         self.dismiss(animated: true)
                     }
                 } else {
-                    self.contents = files.sorted(by: {$0.name.lowercased() < $1.name.lowercased()})
+                    self.fullContents = files.sorted(by: {$0.name.lowercased() < $1.name.lowercased()})
                 }
             })
         } else { //directory is local
@@ -138,7 +182,7 @@ class FilesTableViewController: UITableViewController {
                 files.forEach { (file) in
                     tmp.append(LocalFile(file: file))
                 }
-                self.contents = tmp.sorted(by: {
+                self.fullContents = tmp.sorted(by: {
                     $0.name.lowercased() < $1.name.lowercased()
                 })
             }
@@ -178,7 +222,7 @@ class FilesTableViewController: UITableViewController {
         if let selectedIndexPaths = self.tableView.indexPathsForSelectedRows {
             clipboard = Clipboard(files: [], move: true, srcRemoteFs: remote)
             for indexPath in selectedIndexPaths {
-                clipboard!.files.append(contents[indexPath.row])
+                clipboard!.files.append(tableContents[indexPath.row])
             }
         }
         viewWillAppear(true)
@@ -188,7 +232,7 @@ class FilesTableViewController: UITableViewController {
         if let selectedIndexPaths = self.tableView.indexPathsForSelectedRows {
             clipboard = Clipboard(files: [], move: false, srcRemoteFs: remote)
             for indexPath in selectedIndexPaths {
-                clipboard!.files.append(contents[indexPath.row])
+                clipboard!.files.append(tableContents[indexPath.row])
             }
         }
         viewWillAppear(true)

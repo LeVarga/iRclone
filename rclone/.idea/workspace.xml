@@ -5,8 +5,10 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="f5e269ed-9b48-446d-9e78-f167c19ba02b" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/../iRclone.xcodeproj/project.pbxproj" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone.xcodeproj/project.pbxproj" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/../iRclone/iRclone.entitlements" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/iRclone.entitlements" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/AppDelegate.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/AppDelegate.swift" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/Base.lproj/Main.storyboard" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/Base.lproj/Main.storyboard" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../iRclone/FileManager/UI/FilesTableViewController.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../iRclone/FileManager/UI/FilesTableViewController.swift" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
