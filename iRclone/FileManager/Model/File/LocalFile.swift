@@ -18,6 +18,16 @@ struct LocalFile : File {
         completion(nil)
     }
     
+    func rename(remote: String?, newName: String, completion: @escaping (NSError?) -> Void) {
+        do {
+            let f = URL(fileURLWithPath: self.path, isDirectory: self.isDir)
+            try FileManager.default.moveItem(at: f, to: f.deletingLastPathComponent().appendingPathComponent(newName, isDirectory: self.isDir))
+        } catch let error as NSError {
+            completion(error)
+        }
+        completion(nil)
+    }
+    
     var isDir: Bool
     let path: String
     let name: String

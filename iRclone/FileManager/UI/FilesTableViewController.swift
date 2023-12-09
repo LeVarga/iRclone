@@ -162,6 +162,31 @@ class FilesTableViewController: UITableViewController, UISearchBarDelegate {
         }
     }
     
+    // MARK: - Context menu
+       override func tableView(_ tableView: UITableView,
+                               contextMenuConfigurationForRowAt indexPath: IndexPath,
+                               point: CGPoint) -> UIContextMenuConfiguration? {
+           return UIContextMenuConfiguration(actionProvider: {
+                   _ in
+               let rename = UIAction(title: "Rename", image: UIImage(systemName: "pencil")) { _ in
+                   self.presentInputDialog(title: "Rename item", subtitle: nil, actionTitle: "Rename", cancelTitle: "Cancel", inputPlaceholder: self.tableContents[indexPath.row].name, inputKeyboardType: .default, cancelHandler: { _ in }, actionHandler: { (newName) in
+                       if newName != nil && newName != self.tableContents[indexPath.row].name {
+                           self.tableContents[indexPath.row].rename(remote: self.remote, newName: newName!, completion: {(error) in
+                               if let err = error {
+                                   self.presentError(error: err)
+                               } else {
+                                   self.viewWillAppear(true)
+                                   self.reload()
+                               }
+                           })
+                       }
+                   })
+               }
+               return UIMenu(title: "", children: [rename])
+           })
+       }
+
+    
     // MARK: - Actions
     @objc func reload() {
         self.refreshControl?.beginRefreshing()

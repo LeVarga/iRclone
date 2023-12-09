@@ -64,9 +64,7 @@ class RemotesTableViewController: UITableViewController {
     //editing
     override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
         if editingStyle == .delete {
-            remotes.delete(remote: remotes[indexPath.row], completion: { (error) in
-                self.reload()
-            })
+            deleteUI(remote: remotes[indexPath.row])
         }
     }
     
@@ -75,5 +73,20 @@ class RemotesTableViewController: UITableViewController {
         if let theDestination = segue.destination as? RemoteFilesTableViewController {
             theDestination.remote = selectedRemote
         }
+    }
+    
+    private func deleteUI(remote: Remote) {
+        let alert = UIAlertController(title: "Delete remote", message: "Are you sure you want to delete the configuration for \(remote.name!)?", preferredStyle: UIAlertController.Style.alert)
+        alert.addAction(UIAlertAction(title: "Delete", style: .destructive, handler: { _ in
+            self.remotes.delete(remote: remote, completion: { (error) in
+                if let err = error {
+                    self.presentError(error: err)
+                } else {
+                    self.reload()
+                }
+            })
+            }))
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        self.present(alert, animated: true, completion: nil)
     }
 }

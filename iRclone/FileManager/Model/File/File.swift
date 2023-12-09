@@ -14,6 +14,7 @@ protocol File {
     var isDir: Bool { get }
     var size: Int64 { get }
     func delete(remote: String?, completion: @escaping (NSError?) -> Void)
+    func rename(remote: String?, newName: String, completion: @escaping (NSError?) -> Void)
 }
 
 extension File {

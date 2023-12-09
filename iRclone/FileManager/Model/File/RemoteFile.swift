@@ -35,4 +35,18 @@ extension RemoteFile {
             }
         }
     }
+    
+    func rename(remote: String?, newName: String, completion: @escaping (NSError?) -> Void) {
+        if let remote = remote {
+            var f = URL(fileURLWithPath: self.path, isDirectory: self.isDir)
+            let json: [String: String] = ["srcFs": remote, "srcRemote": path, "dstFs": remote,
+                                          "dstRemote": String(path.dropLast(name.count) + newName)]
+            Rclone.request(queryString: "operations/movefile",
+                           jsonData: try? JSONSerialization.data(withJSONObject: json),
+                           timeout: 30,
+                           decodeAs: Empty.self) { (_, error) in
+                completion(error as NSError?)
+            }
+        }
+    }
 }
