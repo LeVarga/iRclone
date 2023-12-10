@@ -80,6 +80,7 @@
 		385A20599BDDD743A64109B9 /* Pods-iRclone.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-iRclone.debug.xcconfig"; path = "Target Support Files/Pods-iRclone/Pods-iRclone.debug.xcconfig"; sourceTree = "<group>"; };
 		CB8155AE26B09A0C74763AE7 /* Pods-iRclone.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-iRclone.release.xcconfig"; path = "Target Support Files/Pods-iRclone/Pods-iRclone.release.xcconfig"; sourceTree = "<group>"; };
 		DB1F1B4223E514F100CFD9F9 /* RemoteFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteFiles.swift; sourceTree = "<group>"; };
+		DB25C4BC2B259ECF004BC506 /* build-rclone.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "build-rclone.sh"; sourceTree = "<group>"; };
 		DB3D80B423853057004A9DF2 /* iRclone-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "iRclone-Bridging-Header.h"; sourceTree = "<group>"; };
 		DB5DA6A023FBD848002D297D /* RemotesTableViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotesTableViewController.swift; sourceTree = "<group>"; };
 		DB5DA6A223FD1E37002D297D /* iRclone.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = iRclone.entitlements; sourceTree = "<group>"; };
@@ -279,6 +280,7 @@
 		DBF03E0E209677C300CA636B = {
 			isa = PBXGroup;
 			children = (
+				DB25C4BC2B259ECF004BC506 /* build-rclone.sh */,
 				DB7D38542B100A3700D6387A /* README.md */,
 				DBF03E19209677C300CA636B /* iRclone */,
 				DBBB13F52470D048005A2391 /* iRcloneTests */,

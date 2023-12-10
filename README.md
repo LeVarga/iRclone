@@ -3,29 +3,22 @@ Rclone for iOS devices
 
 Work in progress...
 
-iOS 13+ Required
-
-## Features
+## Working features
 - Configure remotes (create / delete)
 - Browse remote directories
 - Copy / move files and directories (including to and from local fs)
 - Stream video content from remote
 - View supported photos, documents and audio files (downloads to tmp directory)
-- Files app support for local files
+- Files app support for local files and rclone.conf
 ## Build
 ### Requirements:
-- cocoapods
-- go
-- gomobile
-- Xcode 11+
+- cocoapods (brew install cocoapods)
+- go (brew install go)
+- Xcode (with command-line tools installed and configured)
 ### Steps:
-- git clone https://github.com/lvarga/iRclone
-- cd iRclone
-- mkdir -p ~/go/src/github.com/rclone/
-- ln -s rclone ~/go/src/github.com/rclone/
-- cd rclone
-- gomobile bind -target=ios/arm64 -o ../rclone.xcframework
-- cd ..
+- git clone https://github.com/levarga/iRclone && cd iRclone
+- go get
+- ./build-rclone.sh
 - pod install
 - open iRclone.xcworkspace
 - configure code signing, build
